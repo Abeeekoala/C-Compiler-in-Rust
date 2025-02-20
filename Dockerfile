@@ -25,6 +25,11 @@ RUN apt-get update && apt-get install -y --fix-missing \
     clang \
     bear
 
+# Install Rust (rustup and Cargo)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+    echo 'export PATH="/root/.cargo/bin:$PATH"' >> /root/.bashrc
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 # Install RISC-V Toolchain
 WORKDIR /tmp
 RUN set -eux; \
