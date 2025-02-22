@@ -74,8 +74,9 @@ pub enum Token {
     WhileKw,
 
     // --- Identifiers ---
-    #[regex("[a-zA-Z_][a-zA-Z0-9_]*")]
-    Identifier,
+    #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]
+    Identifier(String),
+
 
     // --- Numeric Literals ---
     // Hexadecimal literal: e.g. 0x1F
@@ -311,9 +312,9 @@ mod tests {
     fn test_identifiers() {
         let source = "variable _temp myVar";
         let mut lex = Token::lexer(source);
-        assert_eq!(lex.next(), Some(Token::Identifier));
-        assert_eq!(lex.next(), Some(Token::Identifier));
-        assert_eq!(lex.next(), Some(Token::Identifier));
+        assert_eq!(lex.next(), Some(Token::Identifier("variable".to_string())));
+        assert_eq!(lex.next(), Some(Token::Identifier("_temp".to_string())));
+        assert_eq!(lex.next(), Some(Token::Identifier("myVar".to_string())));
     }
 
     #[test]
@@ -377,12 +378,17 @@ mod tests {
         } else {
             panic!("Expected float literal");
         }
-        let token6 = lex.next().unwrap();
-        println!("Token 6: {:?}", token6);
-        if let Token::FloatLiteral(f) = token6 {
+        if let Token::FloatLiteral(f) = lex.next().unwrap() {
             println!("Token 6 (expected 2.71): {}", f);
             // Parsing "2.71f" should produce 2.71
             assert!((f - 2.71).abs() < 1e-6);
+        } else {
+            panic!("Expected float literal");
+        }
+        if let Token::FloatLiteral(f) = lex.next().unwrap() {
+            println!("Token 7 (expected 2.86): {}", f);
+            // Parsing "2.86L" should produce 2.86
+            assert!((f - 2.86).abs() < 1e-6);
         } else {
             panic!("Expected float literal");
         }
