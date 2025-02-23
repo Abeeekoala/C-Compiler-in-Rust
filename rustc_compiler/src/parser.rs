@@ -127,7 +127,7 @@ where
         let expr = self.parse_additive_expression(); // Simplified to additive for now
         if let Some(token) = self.tokens.peek() {
             if self.is_assignment_operator(token) {
-                let op = self.tokens.next().unwrap().to_string();
+                let op = format!("{:?}", self.tokens.next().unwrap());
                 let right = self.parse_assignment_expression();
                 return Expr::Assignment {
                     left: Box::new(expr),
@@ -144,7 +144,7 @@ where
         let mut expr = self.parse_multiplicative_expression();
         while let Some(token) = self.tokens.peek() {
             if matches!(token, Token::Plus | Token::Minus) {
-                let op = self.tokens.next().unwrap().to_string();
+                let op = format!("{:?}", self.tokens.next().unwrap());
                 let right = self.parse_multiplicative_expression();
                 expr = Expr::Binary {
                     left: Box::new(expr),
@@ -163,7 +163,7 @@ where
         let mut expr = self.parse_unary_expression();
         while let Some(token) = self.tokens.peek() {
             if matches!(token, Token::Star | Token::Slash | Token::Percent) {
-                let op = self.tokens.next().unwrap().to_string();
+                let op = format!("{:?}", self.tokens.next().unwrap());
                 let right = self.parse_unary_expression();
                 expr = Expr::Binary {
                     left: Box::new(expr),
