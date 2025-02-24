@@ -77,52 +77,51 @@ pub enum Token {
     #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]
     Identifier(String),
 
-
     // --- Numeric Literals ---
-    // Hexadecimal literal: e.g. 0x1F
-    #[regex("0[xX][0-9a-fA-F]+", |lex| parse_int(lex.slice()))]
-    IntLiteral(i64),
-    // Octal literal: e.g. 0755 (Note: "0" alone is handled by the decimal rule below)
-    #[regex("0[0-7]+", |lex| parse_int(lex.slice()))]
-    IntLiteralOct(i64),
+    #[regex("0[xX][0-9a-fA-F]+[uUlL]*", |lex| parse_int(lex.slice()))]
+    IntLiteralHex((i64, Option<String>)),
+    #[regex("0[0-7]+[uUlL]*", |lex| parse_int(lex.slice()))]
+    IntLiteralOct((i64, Option<String>)),
+    #[regex("[0-9]+[uUlL]*", |lex| parse_int(lex.slice()))]
+    IntLiteralDec((i64, Option<String>)),
+
+    #[regex(r"'([^'\\]|\\.)'", parse_char_as_int)]
+    IntLiteralChar(i64),
 
     // Floating point literal:
     // Supports: 3.14, .5, 2., 1e10, 3.14E-2, etc., with optional [fFlL] suffix.
     #[regex(r"[0-9]+\.[0-9]*([Ee][+-]?[0-9]+)?[fFlL]?", |lex| parse_float(lex.slice()))]
     #[regex(r"\.[0-9]+([Ee][+-]?[0-9]+)?[fFlL]?", |lex| parse_float(lex.slice()))]
     #[regex(r"[0-9]+([Ee][+-]?[0-9]+)[fFlL]?", |lex| parse_float(lex.slice()))]
-    FloatLiteral(f64),
+    FloatLiteral((f64, Option<String>)),
 
-    // Decimal literal: e.g. 123 or 0
-    #[regex("[0-9]+", |lex| parse_int(lex.slice()))]
-    IntLiteralDec(i64),
-
-
-    // --- Character and String Literals ---
-    // Character literal (supports simple escape sequences)
-    #[regex(r"'([^'\\]|\\.)'", |lex| {
-        let s = lex.slice();
-        // Remove the surrounding single quotes.
-        let inner = &s[1..s.len()-1];
-        if inner.starts_with('\\') {
-            match inner.chars().nth(1).unwrap() {
-                'n' => '\n',
-                't' => '\t',
-                'r' => '\r',
-                '\\' => '\\',
-                '\'' => '\'',
-                '\"' => '\"',
-                other => other,
-            }
-        } else {
-            inner.chars().next().unwrap()
-        }
-    })]
-    CharLiteral(char),
-    // String literal (does not process escapes beyond stripping the quotes)
+    // String literal
     #[regex(r#""([^"\\]|\\.)*""#, |lex| {
         let s = lex.slice();
-        s[1..s.len()-1].to_string()
+        let inner = &s[1..s.len() - 1]; // Remove quotes
+        let mut result = String::new();
+        let mut chars = inner.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                if let Some(next) = chars.next() {
+                    match next {
+                        'n' => result.push('\n'),
+                        't' => result.push('\t'),
+                        'r' => result.push('\r'),
+                        '\\' => result.push('\\'),
+                        '\'' => result.push('\''),
+                        '\"' => result.push('\"'),
+                        _ => {
+                            result.push('\\');
+                            result.push(next);
+                        }
+                    }
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
     })]
     StringLiteral(String),
 
@@ -133,12 +132,16 @@ pub enum Token {
     LParen,
     #[token(")")]
     RParen,
+    #[token("<%")]
     #[token("{")]
     LBrace,
+    #[token("%>")]
     #[token("}")]
     RBrace,
+    #[token("<:")]
     #[token("[")]
     LBracket,
+    #[token(":>")]
     #[token("]")]
     RBracket,
     #[token(";")]
@@ -154,29 +157,29 @@ pub enum Token {
     #[token("--")]
     MinusMinus,
     #[token("+")]
-    Plus,
+    Add,
     #[token("-")]
-    Minus,
+    Sub,
     #[token("*")]
-    Star,
+    Mul,
     #[token("/")]
-    Slash,
+    Div,
     #[token("%")]
-    Percent,
+    Mod,
     #[token("&")]
-    Ampersand,
+    BitAnd,
     #[token("|")]
-    Pipe,
+    BitOr,
     #[token("^")]
-    Caret,
+    BitXor,
     #[token("!")]
-    Bang,
+    Not,
     #[token("~")]
     Tilde,
     #[token("=")]
     Assign,
     #[token("==")]
-    EqualEqual,
+    Equal,
     #[token("!=")]
     NotEqual,
     #[token("<")]
@@ -188,38 +191,38 @@ pub enum Token {
     #[token(">=")]
     GreaterEqual,
     #[token("&&")]
-    AndAnd,
+    LogicAnd,
     #[token("||")]
-    OrOr,
+    LogicOr,
     #[token("?")]
     Question,
     #[token(":")]
     Colon,
     // Compound assignment operators
     #[token("+=")]
-    PlusEqual,
+    AddAssign,
     #[token("-=")]
-    MinusEqual,
+    SubAssign,
     #[token("*=")]
-    StarEqual,
+    MulAssign,
     #[token("/=")]
-    SlashEqual,
+    DivAssign,
     #[token("%=")]
-    PercentEqual,
+    ModAssign,
     #[token("&=")]
-    AmpersandEqual,
+    AndAssign,
     #[token("|=")]
-    PipeEqual,
+    OrAssign,
     #[token("^=")]
-    CaretEqual,
+    XorAssign,
     #[token("<<")]
     ShiftLeft,
     #[token(">>")]
     ShiftRight,
     #[token("<<=")]
-    ShiftLeftEqual,
+    LeftAssign,
     #[token(">>=")]
-    ShiftRightEqual,
+    RightAssign,
 
     // --- Whitespace and Comments (skipped) ---
     #[regex(r"[ \t\n\f]+", logos::skip)]
@@ -235,29 +238,60 @@ pub enum Token {
 }
 
 /// Helper function to parse an integer literal string into an `i64`.
-/// This function distinguishes hexadecimal, octal, and decimal forms.
-fn parse_int(slice: &str) -> i64 {
-    if slice.starts_with("0x") || slice.starts_with("0X") {
-        i64::from_str_radix(&slice[2..], 16).unwrap()
-    } else if slice.starts_with("0") && slice.len() > 1 {
-        i64::from_str_radix(&slice[1..], 8).unwrap()
+fn split_numeric_and_suffix(slice: &str) -> (&str, &str) {
+    let suffix_chars = |c: char| matches!(c, 'u' | 'U' | 'l' | 'L');
+    let numeric_len = slice.trim_end_matches(suffix_chars).len();
+    let numeric = &slice[..numeric_len];
+    let suffix = &slice[numeric_len..];
+    (numeric, suffix)
+}
+
+fn parse_int(slice: &str) -> (i64, Option<String>) {
+    let (numeric, suffix) = split_numeric_and_suffix(slice);
+    let value = if numeric.starts_with("0x") || numeric.starts_with("0X") {
+        i64::from_str_radix(&numeric[2..], 16).unwrap()
+    } else if numeric.starts_with("0") && numeric.len() > 1 {
+        i64::from_str_radix(&numeric[1..], 8).unwrap()
     } else {
-        slice.parse::<i64>().unwrap()
+        numeric.parse::<i64>().unwrap()
+    };
+    let suffix = if suffix.is_empty() {
+        None
+    } else {
+        Some(suffix.to_string())
+    };
+    (value, suffix)
+}
+
+fn parse_char_as_int(lex: &logos::Lexer<Token>) -> i64 {
+    let s = lex.slice();
+    let inner = &s[1..s.len() - 1]; // Remove quotes
+    if inner.starts_with('\\') {
+        match inner.chars().nth(1).unwrap() {
+            'n' => '\n' as i64,
+            't' => '\t' as i64,
+            'r' => '\r' as i64,
+            '\\' => '\\' as i64,
+            '\'' => '\'' as i64,
+            '\"' => '\"' as i64,
+            other => other as i64,
+        }
+    } else {
+        inner.chars().next().unwrap() as i64
     }
 }
 
-fn parse_float(slice: &str) -> f64 {
-    // Check if the last character is a suffix we want to remove.
-    let trimmed = if let Some(last) = slice.chars().last() {
-        if last == 'f' || last == 'F' || last == 'l' || last == 'L' {
-            &slice[..slice.len()-1]
-        } else {
-            slice
+fn parse_float(slice: &str) -> (f64, Option<String>) {
+    let mut numeric = slice;
+    let mut suffix = None;
+    if let Some(last) = slice.chars().last() {
+        if matches!(last, 'f' | 'F' | 'l' | 'L') {
+            numeric = &slice[..slice.len() - 1];
+            suffix = Some(last.to_string());
         }
-    } else {
-        slice
-    };
-    trimmed.parse::<f64>().unwrap()
+    }
+    let value = numeric.parse::<f64>().unwrap();
+    (value, suffix)
 }
 
 #[cfg(test)]
@@ -318,79 +352,246 @@ mod tests {
     }
 
     #[test]
-    fn test_int_literals() {
-        let source = "123 0x1F 0755 0";
+    fn test_int_literals_with_suffixes() {
+        let source = "123 123u 123l 123ul 0x1F 0x1Fu 0x1FL 0x1FuL 0755 0755u 0755L 0 0u 0L";
         let mut lex = Token::lexer(source);
-        // Decimal literal 123
-        match lex.next().unwrap() {
-            Token::IntLiteral(i) | Token::IntLiteralDec(i) => assert_eq!(i, 123),
-            other => panic!("Expected int literal, got {:?}", other),
+
+        // Decimal literal 123, no suffix
+        if let Token::IntLiteralDec((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 123);
+            assert_eq!(suffix, None);
+        } else {
+            panic!("Expected IntLiteralDec");
         }
-        // Hexadecimal literal 0x1F => 31
-        match lex.next().unwrap() {
-            Token::IntLiteral(i) => assert_eq!(i, 31),
-            other => panic!("Expected int literal, got {:?}", other),
+
+        // Decimal literal 123u
+        if let Token::IntLiteralDec((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 123);
+            assert_eq!(suffix, Some("u".to_string()));
+        } else {
+            panic!("Expected IntLiteralDec with suffix 'u'");
         }
-        // Octal literal 0755 => 493
-        match lex.next().unwrap() {
-            Token::IntLiteralOct(i) | Token::IntLiteralDec(i) => assert_eq!(i, 493),
-            other => panic!("Expected int literal, got {:?}", other),
+
+        // Decimal literal 123l
+        if let Token::IntLiteralDec((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 123);
+            assert_eq!(suffix, Some("l".to_string()));
+        } else {
+            panic!("Expected IntLiteralDec with suffix 'l'");
         }
-        // Decimal literal 0
-        match lex.next().unwrap() {
-            Token::IntLiteralDec(i) => assert_eq!(i, 0),
-            other => panic!("Expected int literal, got {:?}", other),
+
+        // Decimal literal 123ul
+        if let Token::IntLiteralDec((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 123);
+            assert_eq!(suffix, Some("ul".to_string()));
+        } else {
+            panic!("Expected IntLiteralDec with suffix 'ul'");
+        }
+
+        // Hexadecimal literal 0x1F, no suffix
+        if let Token::IntLiteralHex((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 31);
+            assert_eq!(suffix, None);
+        } else {
+            panic!("Expected IntLiteralHex");
+        }
+
+        // Hexadecimal literal 0x1Fu
+        if let Token::IntLiteralHex((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 31);
+            assert_eq!(suffix, Some("u".to_string()));
+        } else {
+            panic!("Expected IntLiteralHex with suffix 'u'");
+        }
+
+        // Hexadecimal literal 0x1FL
+        if let Token::IntLiteralHex((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 31);
+            assert_eq!(suffix, Some("L".to_string()));
+        } else {
+            panic!("Expected IntLiteralHex with suffix 'L'");
+        }
+
+        // Hexadecimal literal 0x1FuL
+        if let Token::IntLiteralHex((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 31);
+            assert_eq!(suffix, Some("uL".to_string()));
+        } else {
+            panic!("Expected IntLiteralHex with suffix 'uL'");
+        }
+
+        // Octal literal 0755, no suffix
+        if let Token::IntLiteralOct((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 493);
+            assert_eq!(suffix, None);
+        } else {
+            panic!("Expected IntLiteralOct");
+        }
+
+        // Octal literal 0755u
+        if let Token::IntLiteralOct((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 493);
+            assert_eq!(suffix, Some("u".to_string()));
+        } else {
+            panic!("Expected IntLiteralOct with suffix 'u'");
+        }
+
+        // Octal literal 0755L
+        if let Token::IntLiteralOct((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 493);
+            assert_eq!(suffix, Some("L".to_string()));
+        } else {
+            panic!("Expected IntLiteralOct with suffix 'L'");
+        }
+
+        // Decimal literal 0, no suffix
+        if let Token::IntLiteralDec((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 0);
+            assert_eq!(suffix, None);
+        } else {
+            panic!("Expected IntLiteralDec");
+        }
+
+        // Decimal literal 0u
+        if let Token::IntLiteralDec((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 0);
+            assert_eq!(suffix, Some("u".to_string()));
+        } else {
+            panic!("Expected IntLiteralDec with suffix 'u'");
+        }
+
+        // Decimal literal 0L
+        if let Token::IntLiteralDec((value, suffix)) = lex.next().unwrap() {
+            assert_eq!(value, 0);
+            assert_eq!(suffix, Some("L".to_string()));
+        } else {
+            panic!("Expected IntLiteralDec with suffix 'L'");
         }
     }
 
     #[test]
-    fn test_float_literals() {
-        let source = "3.14 .5 2. 1e10 3.14E-2 2.71f 2.86L";
+    fn test_float_literals_with_suffixes() {
+        let source = "3.14 3.14f 3.14L .5 .5f .5L 2. 2.f 2.L 1e10 1e10f 1e10L 3.14E-2 3.14E-2f 3.14E-2L";
         let mut lex = Token::lexer(source);
 
-        if let Token::FloatLiteral(f) = lex.next().unwrap() {
-            println!("Token 1 (expected 3.14): {}", f);
-            assert!((f - 3.14).abs() < 1e-6);
+        // Float literal 3.14, no suffix
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 3.14).abs() < 1e-6);
+            assert_eq!(suffix, None);
         } else {
-            panic!("Expected float literal");
+            panic!("Expected FloatLiteral");
         }
-        if let Token::FloatLiteral(f) = lex.next().unwrap() {
-            println!("Token 2 (expected 0.5): {}", f);
-            assert!((f - 0.5).abs() < 1e-6);
+
+        // Float literal 3.14f
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 3.14).abs() < 1e-6);
+            assert_eq!(suffix, Some("f".to_string()));
         } else {
-            panic!("Expected float literal");
+            panic!("Expected FloatLiteral with suffix 'f'");
         }
-        if let Token::FloatLiteral(f) = lex.next().unwrap() {
-            println!("Token 3 (expected 2.0): {}", f);
-            assert!((f - 2.0).abs() < 1e-6);
+
+        // Float literal 3.14L
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 3.14).abs() < 1e-6);
+            assert_eq!(suffix, Some("L".to_string()));
         } else {
-            panic!("Expected float literal");
+            panic!("Expected FloatLiteral with suffix 'L'");
         }
-        if let Token::FloatLiteral(f) = lex.next().unwrap() {
-            println!("Token 4 (expected 1e10): {}", f);
-            assert!((f - 1e10).abs() < 1e-2);
+
+        // Float literal .5, no suffix
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 0.5).abs() < 1e-6);
+            assert_eq!(suffix, None);
         } else {
-            panic!("Expected float literal");
+            panic!("Expected FloatLiteral");
         }
-        if let Token::FloatLiteral(f) = lex.next().unwrap() {
-            println!("Token 5 (expected 3.14E-2): {}", f);
-            assert!((f - 3.14E-2).abs() < 1e-6);
+
+        // Float literal .5f
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 0.5).abs() < 1e-6);
+            assert_eq!(suffix, Some("f".to_string()));
         } else {
-            panic!("Expected float literal");
+            panic!("Expected FloatLiteral with suffix 'f'");
         }
-        if let Token::FloatLiteral(f) = lex.next().unwrap() {
-            println!("Token 6 (expected 2.71): {}", f);
-            // Parsing "2.71f" should produce 2.71
-            assert!((f - 2.71).abs() < 1e-6);
+
+        // Float literal .5L
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 0.5).abs() < 1e-6);
+            assert_eq!(suffix, Some("L".to_string()));
         } else {
-            panic!("Expected float literal");
+            panic!("Expected FloatLiteral with suffix 'L'");
         }
-        if let Token::FloatLiteral(f) = lex.next().unwrap() {
-            println!("Token 7 (expected 2.86): {}", f);
-            // Parsing "2.86L" should produce 2.86
-            assert!((f - 2.86).abs() < 1e-6);
+
+        // Float literal 2., no suffix
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 2.0).abs() < 1e-6);
+            assert_eq!(suffix, None);
         } else {
-            panic!("Expected float literal");
+            panic!("Expected FloatLiteral");
+        }
+
+        // Float literal 2.f
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 2.0).abs() < 1e-6);
+            assert_eq!(suffix, Some("f".to_string()));
+        } else {
+            panic!("Expected FloatLiteral with suffix 'f'");
+        }
+
+        // Float literal 2.L
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 2.0).abs() < 1e-6);
+            assert_eq!(suffix, Some("L".to_string()));
+        } else {
+            panic!("Expected FloatLiteral with suffix 'L'");
+        }
+
+        // Float literal 1e10, no suffix
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 1e10).abs() < 1e-2);
+            assert_eq!(suffix, None);
+        } else {
+            panic!("Expected FloatLiteral");
+        }
+
+        // Float literal 1e10f
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 1e10).abs() < 1e-2);
+            assert_eq!(suffix, Some("f".to_string()));
+        } else {
+            panic!("Expected FloatLiteral with suffix 'f'");
+        }
+
+        // Float literal 1e10L
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 1e10).abs() < 1e-2);
+            assert_eq!(suffix, Some("L".to_string()));
+        } else {
+            panic!("Expected FloatLiteral with suffix 'L'");
+        }
+
+        // Float literal 3.14E-2, no suffix
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 3.14E-2).abs() < 1e-6);
+            assert_eq!(suffix, None);
+        } else {
+            panic!("Expected FloatLiteral");
+        }
+
+        // Float literal 3.14E-2f
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 3.14E-2).abs() < 1e-6);
+            assert_eq!(suffix, Some("f".to_string()));
+        } else {
+            panic!("Expected FloatLiteral with suffix 'f'");
+        }
+
+        // Float literal 3.14E-2L
+        if let Token::FloatLiteral((value, suffix)) = lex.next().unwrap() {
+            assert!((value - 3.14E-2).abs() < 1e-6);
+            assert_eq!(suffix, Some("L".to_string()));
+        } else {
+            panic!("Expected FloatLiteral with suffix 'L'");
         }
     }
 
@@ -406,36 +607,20 @@ mod tests {
     }
 
     #[test]
-    fn test_char_literal() {
-        let source = r#"'a' '\n'"#;
-        let mut lex = Token::lexer(source);
-        if let Token::CharLiteral(c) = lex.next().unwrap() {
-            assert_eq!(c, 'a');
-        } else {
-            panic!("Expected char literal");
-        }
-        if let Token::CharLiteral(c) = lex.next().unwrap() {
-            assert_eq!(c, '\n');
-        } else {
-            panic!("Expected char literal");
-        }
-    }
-
-    #[test]
     fn test_punctuation_and_operators() {
-        let source = "( ) { } [ ] ; , . -> ++ -- + - * / % & | ^ ! ~ = == != < <= > >= && || ? : += -= *= /= %= &= |= ^= << >> <<= >>=";
+        let source = "( ) { <% } %> [ <: ] :> ; , . -> ++ -- + - * / % & | ^ ! ~ = == != < <= > >= && || ? : += -= *= /= %= &= |= ^= << >> <<= >>=";
         let mut lex = Token::lexer(source);
         let expected_tokens = [
-            Token::LParen, Token::RParen, Token::LBrace, Token::RBrace,
-            Token::LBracket, Token::RBracket, Token::Semicolon, Token::Comma,
+            Token::LParen, Token::RParen, Token::LBrace, Token::LBrace, Token::RBrace, Token::RBrace,
+            Token::LBracket, Token::LBracket, Token::RBracket, Token::RBracket, Token::Semicolon, Token::Comma,
             Token::Dot, Token::Arrow, Token::PlusPlus, Token::MinusMinus,
-            Token::Plus, Token::Minus, Token::Star, Token::Slash, Token::Percent,
-            Token::Ampersand, Token::Pipe, Token::Caret, Token::Bang, Token::Tilde,
-            Token::Assign, Token::EqualEqual, Token::NotEqual, Token::Less, Token::LessEqual,
-            Token::Greater, Token::GreaterEqual, Token::AndAnd, Token::OrOr, Token::Question,
-            Token::Colon, Token::PlusEqual, Token::MinusEqual, Token::StarEqual,
-            Token::SlashEqual, Token::PercentEqual, Token::AmpersandEqual, Token::PipeEqual,
-            Token::CaretEqual, Token::ShiftLeft, Token::ShiftRight, Token::ShiftLeftEqual, Token::ShiftRightEqual,
+            Token::Add, Token::Sub, Token::Mul, Token::Div, Token::Mod,
+            Token::BitAnd, Token::BitOr, Token::BitXor, Token::Not, Token::Tilde,
+            Token::Assign, Token::Equal, Token::NotEqual, Token::Less, Token::LessEqual,
+            Token::Greater, Token::GreaterEqual, Token::LogicAnd, Token::LogicOr, Token::Question,
+            Token::Colon, Token::AddAssign, Token::SubAssign, Token::MulAssign,
+            Token::DivAssign, Token::ModAssign, Token::AndAssign, Token::OrAssign,
+            Token::XorAssign, Token::ShiftLeft, Token::ShiftRight, Token::LeftAssign, Token::RightAssign,
         ];
         for expected in expected_tokens.iter() {
             assert_eq!(&lex.next().unwrap(), expected);
