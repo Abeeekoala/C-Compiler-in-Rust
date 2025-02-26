@@ -294,6 +294,21 @@ fn parse_float(slice: &str) -> (f64, Option<String>) {
     (value, suffix)
 }
 
+/// Tokenize a string into a vector of tokens.
+pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
+    let mut lexer = Token::lexer(source);
+    let mut tokens = Vec::new();
+
+    while let Some(token) = lexer.next() {
+        match token {
+            Token::Error => return Err(format!("Lexical error at position {}", lexer.span().start)),
+            _ => tokens.push(token),
+        }
+    }
+
+    Ok(tokens)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
