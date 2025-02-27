@@ -309,6 +309,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
     Ok(tokens)
 }
 
+//unit tests
 #[cfg(test)]
 mod tests {
     use super::*;

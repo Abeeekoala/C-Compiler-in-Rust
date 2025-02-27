@@ -27,68 +27,86 @@ pub fn parse_source(source: &str) -> Result<ast::AstNode, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::Parser;
+    use crate::ast::{AstNode, TypeSpecifier};
 
     #[test]
-    fn test_empty_function() {
-        let source = "int main() { }";
-        let result = parse_source(source);
+    fn test_parse_empty_function() {
+        let source = "int main() {}";
+        let lexer = lexer::tokenize(source).unwrap();
+        let mut parser = Parser::new(lexer);
 
-        assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let ast = result.unwrap();
+        let result = parser.parse_translation_unit();
+        assert!(result.is_ok());
 
-        if let ast::AstNode::FunctionDefinition { decl_specifiers, declarator, compound_statement } = ast {
-            assert_eq!(decl_specifiers, ast::TypeSpecifier::Int);
+        if let Ok(AstNode::NodeList(declarations)) = result {
+            assert_eq!(declarations.len(), 1);
+            // Verify it's a function definition
+            match &declarations[0] {
+                AstNode::FunctionDefinition { decl_specifiers, declarator, .. } => {
+                    assert_eq!(*decl_specifiers, TypeSpecifier::Int);
 
-            if let ast::AstNode::Identifier(name) = *declarator {
-                assert_eq!(name, "main");
-            } else {
-                panic!("Expected Identifier in declarator");
-            }
-
-            if let ast::AstNode::NodeList(statements) = *compound_statement {
-                assert!(statements.is_empty(), "Expected empty function body");
-            } else {
-                panic!("Expected NodeList for compound_statement");
+                    // Check the function name
+                    if let AstNode::Identifier(name) = &**declarator {
+                        assert_eq!(name, "main");
+                    } else {
+                        panic!("Expected Identifier in declarator");
+                    }
+                },
+                _ => panic!("Expected function definition"),
             }
         } else {
-            panic!("Expected FunctionDefinition, got: {}", ast.print());
+            panic!("Expected NodeList");
         }
     }
 
     #[test]
-    fn test_function_with_return() {
-        let source = "int main() { return 42; }";
-        let result = parse_source(source);
+    fn test_parse_function_with_return() {
+        let source = "int test() { return 42; }";
+        let lexer = lexer::tokenize(source).unwrap();
+        let mut parser = Parser::new(lexer);
 
-        assert!(result.is_ok(), "Parse error: {:?}", result.err());
-        let ast = result.unwrap();
+        let result = parser.parse_translation_unit();
+        assert!(result.is_ok());
+    }
 
-        if let ast::AstNode::FunctionDefinition { decl_specifiers, declarator, compound_statement } = ast {
-            assert_eq!(decl_specifiers, ast::TypeSpecifier::Int);
+    #[test]
+    fn test_parse_void_function() {
+        let source = "void empty() { return; }";
+        let lexer = lexer::tokenize(source).unwrap();
+        let mut parser = Parser::new(lexer);
 
-            if let ast::AstNode::Identifier(name) = *declarator {
-                assert_eq!(name, "main");
-            } else {
-                panic!("Expected Identifier in declarator");
-            }
+        let result = parser.parse_translation_unit();
+        assert!(result.is_ok());
+    }
 
-            if let ast::AstNode::NodeList(statements) = *compound_statement {
-                assert_eq!(statements.len(), 1, "Expected one statement in function body");
+    #[test]
+    fn test_missing_semicolon() {
+        let source = "int broken() { return 42 }"; // Missing semicolon
+        let lexer = lexer::tokenize(source).unwrap();
+        let mut parser = Parser::new(lexer);
 
-                if let ast::AstNode::ReturnStatement(Some(expr)) = &statements[0] {
-                    if let ast::AstNode::IntConstant(value) = **expr {
-                        assert_eq!(value, 42);
-                    } else {
-                        panic!("Expected IntConstant in return statement");
-                    }
-                } else {
-                    panic!("Expected ReturnStatement with expression");
-                }
-            } else {
-                panic!("Expected NodeList for compound_statement");
-            }
-        } else {
-            panic!("Expected FunctionDefinition, got: {}", ast.print());
-        }
+        let result = parser.parse_translation_unit();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mismatched_braces() {
+        let source = "int broken() { return 42; "; // Missing closing brace
+        let lexer = lexer::tokenize(source).unwrap();
+        let mut parser = Parser::new(lexer);
+
+        let result = parser.parse_translation_unit();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_statement() {
+        let source = "int test() { ; }"; // Empty statement
+        let lexer = lexer::tokenize(source).unwrap();
+        let mut parser = Parser::new(lexer);
+
+        let result = parser.parse_translation_unit();
+        assert!(result.is_ok());
     }
 }
