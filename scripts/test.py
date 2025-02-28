@@ -56,6 +56,9 @@ BUILD_TIMEOUT_SECONDS = 60
 RUN_TIMEOUT_SECONDS = 15
 TIMEOUT_RETURNCODE = 124
 
+# Add a constant for the Rust project location
+RUST_PROJECT_LOCATION = PROJECT_LOCATION.joinpath("rustc_compiler").resolve()
+
 @dataclass
 class Result:
     """Class for keeping track of each test case result"""
@@ -213,7 +216,7 @@ def run_test(driver: Path) -> Result:
 
     # Compile
     return_code, _, timed_out = run_subprocess(
-        cmd=[COMPILER_FILE, "-S", to_assemble, "-o", f"{log_path}.s"],
+        cmd=[COMPILER_FILE, str(to_assemble), f"{log_path}.s"],
         timeout=RUN_TIMEOUT_SECONDS,
         env=custom_env,
         log_path=f"{log_path}.compiler",
@@ -279,6 +282,7 @@ def run_subprocess(
     env: Optional[dict] = None,
     log_path: Optional[str] = None,
     silent: bool = False,
+    cwd: Optional[Path] = None,  # Add current working directory parameter
 ) -> tuple[int, str, bool]:
     """
     Wrapper for subprocess.run(...) with common arguments and error handling.
@@ -297,7 +301,7 @@ def run_subprocess(
         stderr = open(f"{log_path}.stderr.log", "w")
 
     try:
-        subprocess.run(cmd, env=env, stdout=stdout, stderr=stderr, timeout=timeout, check=True)
+        subprocess.run(cmd, env=env, stdout=stdout, stderr=stderr, timeout=timeout, check=True, cwd=cwd)
     except subprocess.CalledProcessError as e:
         return e.returncode, f"{e.cmd} failed with return code {e.returncode}", False
     except subprocess.TimeoutExpired as e:
@@ -324,33 +328,92 @@ def clean() -> bool:
 
 def make(silent: bool) -> bool:
     """
-    Wrapper for make bin/c_compiler.
-
+    Wrapper for building Rust compiler.
     Return True if successful, False otherwise
     """
-    print(GREEN + "Running make..." + RESET)
+    print(GREEN + "Building Rust compiler..." + RESET)
     return_code, error_msg, _ = run_subprocess(
-        cmd=["make", "-C", PROJECT_LOCATION, "bin/c_compiler"], timeout=BUILD_TIMEOUT_SECONDS, silent=silent
+        cmd=["cargo", "build", "--release"],
+        timeout=BUILD_TIMEOUT_SECONDS,
+        silent=silent,
+        cwd=RUST_PROJECT_LOCATION  # Run in the Rust project directory
     )
     if return_code != 0:
-        print(RED + "Error when making:", error_msg + RESET)
+        print(RED + "Error when building:", error_msg + RESET)
         return False
+
+    # Ensure bin directory exists
+    os.makedirs(PROJECT_LOCATION.joinpath("bin").resolve(), exist_ok=True)
+
+    # Copy the compiled binary to the expected location
+    shutil.copy(
+        RUST_PROJECT_LOCATION.joinpath("target/release/rustc_compiler").resolve(),
+        COMPILER_FILE
+    )
 
     return True
 
 def coverage() -> bool:
     """
-    Wrapper for make coverage.
-
+    Wrapper for generating Rust code coverage.
     Return True if successful, False otherwise
     """
-    print(GREEN + "Running make coverage..." + RESET)
+    print(GREEN + "Generating Rust code coverage..." + RESET)
+
+    # Install grcov if not already installed
+    try:
+        subprocess.run(["grcov", "--version"], check=True, stdout=subprocess.DEVNULL)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("Installing grcov...")
+        return_code, error_msg, _ = run_subprocess(
+            cmd=["cargo", "install", "grcov"],
+            timeout=BUILD_TIMEOUT_SECONDS * 2,
+            silent=True
+        )
+        if return_code != 0:
+            print(RED + "Error installing grcov:", error_msg + RESET)
+            return False
+
+    # Clean previous coverage data
+    shutil.rmtree(COVERAGE_FOLDER, ignore_errors=True)
+    os.makedirs(COVERAGE_FOLDER, exist_ok=True)
+
+    # Set environment variables for coverage
+    coverage_env = os.environ.copy()
+    coverage_env["RUSTFLAGS"] = "-Cinstrument-coverage"
+    coverage_env["LLVM_PROFILE_FILE"] = "coverage-%p-%m.profraw"
+
+    # Run tests with coverage in the Rust project directory
     return_code, error_msg, _ = run_subprocess(
-        cmd=["make", "-C", PROJECT_LOCATION, "coverage"], timeout=BUILD_TIMEOUT_SECONDS, silent=True
+        cmd=["cargo", "test", "--release"],
+        timeout=BUILD_TIMEOUT_SECONDS * 2,
+        env=coverage_env,
+        silent=True,
+        cwd=RUST_PROJECT_LOCATION
     )
     if return_code != 0:
-        print(RED + "Error when making coverage:", error_msg + RESET)
+        print(RED + "Error when running tests with coverage:", error_msg + RESET)
         return False
+
+    # Generate HTML report (run in the Rust project directory)
+    return_code, error_msg, _ = run_subprocess(
+        cmd=[
+            "grcov", ".", "--binary-path", "./target/release/",
+            "-s", ".", "-t", "html", "--branch", "--ignore-not-existing",
+            "-o", str(COVERAGE_FOLDER)
+        ],
+        timeout=BUILD_TIMEOUT_SECONDS,
+        silent=True,
+        cwd=RUST_PROJECT_LOCATION
+    )
+    if return_code != 0:
+        print(RED + "Error generating coverage report:", error_msg + RESET)
+        return False
+
+    # Clean up profraw files
+    for f in Path(RUST_PROJECT_LOCATION).glob("**/*.profraw"):
+        f.unlink()
+
     return True
 
 def serve_coverage_forever(host: str, port: int):

@@ -22,9 +22,11 @@ OBJECTS += build/parser.tab.o build/lexer.yy.o
 
 default: bin/c_compiler
 
-bin/c_compiler: $(OBJECTS)
+bin/c_compiler:
 	@mkdir -p bin
-	g++ $(CXXFLAGS) -o $@ $^
+	cd rustc_compiler && cargo build --release
+	cp rustc_compiler/target/release/rustc_compiler bin/c_compiler
+	chmod +x bin/c_compiler
 
 -include $(DEPENDENCIES)
 
@@ -41,13 +43,13 @@ build/lexer.yy.cpp: src/lexer.flex build/parser.tab.hpp
 	flex -o build/lexer.yy.cpp src/lexer.flex
 
 coverage:
-	@rm -rf coverage/
 	@mkdir -p coverage
-	lcov -c --no-external --exclude "`pwd`/src/lexer.*" --exclude "`pwd`/src/parser.*" --exclude "`pwd`/build/*" -d . -o coverage/cov.info
-	genhtml coverage/cov.info -o coverage
-	@find . -name "*.gcda" -delete
+	cd rustc_compiler && cargo install grcov
+	cd rustc_compiler && RUSTFLAGS="-Cinstrument-coverage" LLVM_PROFILE_FILE="coverage-%p-%m.profraw" cargo test --release
+	cd rustc_compiler && grcov . --binary-path ./target/release/ -s . -t html --branch --ignore-not-existing -o ../coverage/
+	@find . -name "*.profraw" -delete
 
-clean :
+clean:
 	@rm -rf coverage/
-	@rm -rf build/
 	@rm -rf bin/
+	cd rustc_compiler && cargo clean
