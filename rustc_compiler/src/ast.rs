@@ -57,6 +57,44 @@ pub enum AstNode {
     },
     /// A list of nodes (for compound statements or translation units).
     NodeList(Vec<AstNode>),
+    /// Binary operations (e.g., a + b, a * b)
+    BinaryOperation {
+        op: String,
+        left: Box<AstNode>,
+        right: Box<AstNode>,
+    },
+    /// Unary operations (e.g., !a, -b, ++c)
+    UnaryOperation {
+        op: String,
+        operand: Box<AstNode>,
+    },
+    /// Ternary/conditional operation (a ? b : c)
+    TernaryOperation {
+        condition: Box<AstNode>,
+        true_expr: Box<AstNode>,
+        false_expr: Box<AstNode>,
+    },
+    /// Array subscript (array[index])
+    ArraySubscript {
+        array: Box<AstNode>,
+        index: Box<AstNode>,
+    },
+    /// Function call (func(arg1, arg2))
+    FunctionCall {
+        function: Box<AstNode>,
+        args: Vec<Box<AstNode>>,
+    },
+    /// A declarator with an optional initializer in a declaration
+    InitDeclarator {
+        declarator: Box<AstNode>,
+        initializer: Option<Box<AstNode>>,
+    },
+    /// If statement (if condition { then_stmt } else { else_stmt })
+    IfStatement {
+        condition: Box<AstNode>,
+        then_stmt: Box<AstNode>,
+        else_stmt: Option<Box<AstNode>>,
+    },
 }
 
 /// Binary operators

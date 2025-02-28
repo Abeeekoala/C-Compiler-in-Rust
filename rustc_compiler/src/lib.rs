@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod lexer;
 pub mod parser;
+pub mod codegen;
 
 use ast::Node;
 
@@ -29,6 +30,7 @@ mod tests {
     use super::*;
     use crate::parser::Parser;
     use crate::ast::{AstNode, TypeSpecifier};
+    use crate::lexer::tokenize;
 
     #[test]
     fn test_parse_empty_function() {
@@ -38,6 +40,10 @@ mod tests {
 
         let result = parser.parse_translation_unit();
         assert!(result.is_ok());
+
+        if let Ok(ast) = &result {
+            println!("Empty function AST: {:#?}", ast);
+        }
 
         if let Ok(AstNode::NodeList(declarations)) = result {
             assert_eq!(declarations.len(), 1);
@@ -68,6 +74,10 @@ mod tests {
 
         let result = parser.parse_translation_unit();
         assert!(result.is_ok());
+
+        if let Ok(ast) = &result {
+            println!("Function with return: {:#?}", ast);
+        }
     }
 
     #[test]
@@ -78,6 +88,10 @@ mod tests {
 
         let result = parser.parse_translation_unit();
         assert!(result.is_ok());
+
+        if let Ok(ast) = &result {
+            println!("Void function AST: {:#?}", ast);
+        }
     }
 
     #[test]
@@ -108,5 +122,104 @@ mod tests {
 
         let result = parser.parse_translation_unit();
         assert!(result.is_ok());
+
+        if let Ok(ast) = &result {
+            println!("Empty statement AST: {:#?}", ast);
+        }
+    }
+
+    #[test]
+    fn test_parse_basic_expression() {
+        let source = "1 + 2 * 3;";
+        let tokens = tokenize(source).unwrap();
+        let mut parser = Parser::new(tokens);
+
+        let result = parser.parse_expression_statement();
+        assert!(result.is_ok());
+
+        if let Ok(ast) = &result {
+            println!("Basic expression AST: {:#?}", ast);
+        }
+    }
+
+    #[test]
+    fn test_parse_function_definition() {
+        let source = "int main() { return 0; }";
+        let tokens = tokenize(source).unwrap();
+        let mut parser = Parser::new(tokens);
+
+        let result = parser.parse_function_definition();
+        assert!(result.is_ok());
+
+        if let Ok(ast) = &result {
+            println!("Function definition AST: {:#?}", ast);
+        }
+    }
+
+    #[test]
+    fn test_parse_complex_expression() {
+        let source = "a * (b + c) / (d - e);";
+        let tokens = tokenize(source).unwrap();
+        let mut parser = Parser::new(tokens);
+
+        let result = parser.parse_expression_statement();
+        assert!(result.is_ok());
+
+        if let Ok(ast) = &result {
+            println!("Complex expression AST: {:#?}", ast);
+        }
+    }
+}
+
+#[cfg(test)]
+mod codegen_tests {
+    use super::*;
+
+    #[test]
+    fn test_return_constant() {
+        let source = "int main() { return 42; }";
+        let ast = parse_source(source).unwrap();
+        let assembly = codegen::generate_code(&ast);
+
+        // Verify the assembly contains the expected instruction
+        assert!(assembly.contains("li t0, 42"));
+        assert!(assembly.contains("mv a0, t0"));
+        println!("Generated assembly:\n{}", assembly);
+    }
+
+    #[test]
+    fn test_arithmetic() {
+        let source = "int main() { return 3 + 4 * 5; }";
+        let ast = parse_source(source).unwrap();
+        let assembly = codegen::generate_code(&ast);
+
+        // Basic verification that arithmetic operations are generated
+        assert!(assembly.contains("li "));
+        assert!(assembly.contains("mul "));
+        assert!(assembly.contains("add "));
+        println!("Generated assembly:\n{}", assembly);
+    }
+
+    #[test]
+    fn test_if_statement() {
+        let source = "int main() { if (1) { return 42; } else { return 24; } }";
+        let ast = parse_source(source).unwrap();
+        let assembly = codegen::generate_code(&ast);
+
+        // Verify the assembly contains the if structure
+        assert!(assembly.contains("beqz"));
+        assert!(assembly.contains("j"));
+        println!("Generated assembly for if-else:\n{}", assembly);
+    }
+
+    #[test]
+    fn test_if_without_else() {
+        let source = "int main() { if (1) { return 42; } return 0; }";
+        let ast = parse_source(source).unwrap();
+        let assembly = codegen::generate_code(&ast);
+
+        // Verify the assembly contains the if structure
+        assert!(assembly.contains("beqz"));
+        println!("Generated assembly for if without else:\n{}", assembly);
     }
 }

@@ -65,7 +65,7 @@ impl Parser {
     }
 
     /// Parse a function definition
-    fn parse_function_definition(&mut self) -> ParseResult {
+    pub fn parse_function_definition(&mut self) -> ParseResult {
         // Parse declaration specifiers
         let decl_spec = self.parse_declaration_specifiers()?;
 
@@ -161,6 +161,7 @@ impl Parser {
                 self.advance(); // Consume ';'
                 Ok(AstNode::NodeList(Vec::new())) // Empty statement
             },
+            Some(Token::IfKw) => self.parse_if_statement(),
             _ => self.parse_expression_statement(),
         }
     }
@@ -185,7 +186,7 @@ impl Parser {
     }
 
     /// Parse an expression statement
-    fn parse_expression_statement(&mut self) -> ParseResult {
+    pub fn parse_expression_statement(&mut self) -> ParseResult {
         let expr = self.parse_expression()?;
 
         // Expect ';'
@@ -199,16 +200,515 @@ impl Parser {
 
     /// Parse an expression
     fn parse_expression(&mut self) -> ParseResult {
-        // For simplicity, just handle integer literals for now
-        if let Some(Token::IntLiteralDec((value, _))) = self.advance() {
-            return Ok(AstNode::IntConstant(value as i32));
+        // Start with lowest precedence: comma expressions
+        let mut expr = self.parse_assignment_expression()?;
+
+        // Handle comma-separated expressions
+        while let Some(Token::Comma) = self.peek() {
+            self.advance(); // Consume ','
+            let right = self.parse_assignment_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: ",".to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
         }
 
-        Err("Expected expression".to_string())
+        Ok(expr)
+    }
+
+    /// Parse assignment expressions
+    fn parse_assignment_expression(&mut self) -> ParseResult {
+        // First, try to parse the LHS as a conditional expression
+        let lhs = self.parse_conditional_expression()?;
+
+        // Check if next token is an assignment operator
+        if let Some(token) = self.peek() {
+            if let Token::Assign = token {
+                self.advance(); // Consume the '='
+
+                // Parse the RHS, which is another assignment expression
+                let rhs = self.parse_assignment_expression()?;
+
+                return Ok(AstNode::BinaryOperation {
+                    op: "=".to_string(),
+                    left: Box::new(lhs),
+                    right: Box::new(rhs),
+                });
+            }
+            // Later: Add other assignment operators (+=, -=, etc.)
+        }
+
+        // If no assignment operator, return the conditional expression
+        Ok(lhs)
+    }
+
+    /// Parse conditional expression (ternary operator)
+    fn parse_conditional_expression(&mut self) -> ParseResult {
+        // Parse the condition part
+        let condition = self.parse_logical_or_expression()?;
+
+        // Check for the '?' operator
+        if let Some(Token::Question) = self.peek() {
+            self.advance(); // Consume '?'
+
+            // Parse the true expression
+            let true_expr = self.parse_expression()?;
+
+            // Expect ':'
+            self.consume(&Token::Colon)?;
+
+            // Parse the false expression
+            let false_expr = self.parse_conditional_expression()?;
+
+            return Ok(AstNode::TernaryOperation {
+                condition: Box::new(condition),
+                true_expr: Box::new(true_expr),
+                false_expr: Box::new(false_expr),
+            });
+        }
+
+        // If no '?', return the logical OR expression
+        Ok(condition)
+    }
+
+    /// Parse logical OR expression
+    fn parse_logical_or_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_logical_and_expression()?;
+
+        while let Some(Token::LogicOr) = self.peek() {
+            self.advance(); // Consume '||'
+            let right = self.parse_logical_and_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: "||".to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse logical AND expression
+    fn parse_logical_and_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_inclusive_or_expression()?;
+
+        while let Some(Token::LogicAnd) = self.peek() {
+            self.advance(); // Consume '&&'
+            let right = self.parse_inclusive_or_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: "&&".to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse inclusive OR expression
+    fn parse_inclusive_or_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_exclusive_or_expression()?;
+
+        while let Some(Token::BitOr) = self.peek() {
+            self.advance(); // Consume '|'
+            let right = self.parse_exclusive_or_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: "|".to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse exclusive OR expression
+    fn parse_exclusive_or_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_and_expression()?;
+
+        while let Some(Token::BitXor) = self.peek() {
+            self.advance(); // Consume '^'
+            let right = self.parse_and_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: "^".to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse AND expression
+    fn parse_and_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_equality_expression()?;
+
+        while let Some(Token::BitAnd) = self.peek() {
+            self.advance(); // Consume '&'
+            let right = self.parse_equality_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: "&".to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse equality expression
+    fn parse_equality_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_relational_expression()?;
+
+        while let Some(token) = self.peek() {
+            let op = match token {
+                Token::Equal => "==",
+                Token::NotEqual => "!=",
+                _ => break,
+            };
+
+            self.advance(); // Consume operator
+            let right = self.parse_relational_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: op.to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse relational expression
+    fn parse_relational_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_shift_expression()?;
+
+        while let Some(token) = self.peek() {
+            let op = match token {
+                Token::Less => "<",
+                Token::Greater => ">",
+                Token::LessEqual => "<=",
+                Token::GreaterEqual => ">=",
+                _ => break,
+            };
+
+            self.advance(); // Consume operator
+            let right = self.parse_shift_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: op.to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse shift expression
+    fn parse_shift_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_additive_expression()?;
+
+        while let Some(token) = self.peek() {
+            let op = match token {
+                Token::ShiftLeft => "<<",
+                Token::ShiftRight => ">>",
+                _ => break,
+            };
+
+            self.advance(); // Consume operator
+            let right = self.parse_additive_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: op.to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse additive expression
+    fn parse_additive_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_multiplicative_expression()?;
+
+        while let Some(token) = self.peek() {
+            let op = match token {
+                Token::Add => "+",
+                Token::Sub => "-",
+                _ => break,
+            };
+
+            self.advance(); // Consume operator
+            let right = self.parse_multiplicative_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: op.to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse multiplicative expression
+    fn parse_multiplicative_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_cast_expression()?;
+
+        while let Some(token) = self.peek() {
+            let op = match token {
+                Token::Mul => "*",
+                Token::Div => "/",
+                Token::Mod => "%",
+                _ => break,
+            };
+
+            self.advance(); // Consume operator
+            let right = self.parse_cast_expression()?;
+            expr = AstNode::BinaryOperation {
+                op: op.to_string(),
+                left: Box::new(expr),
+                right: Box::new(right),
+            };
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse cast expression (type casting)
+    fn parse_cast_expression(&mut self) -> ParseResult {
+        // For now, we'll skip cast expressions and just go to unary
+        // Later: Add support for type casting
+        self.parse_unary_expression()
+    }
+
+    /// Parse unary expression
+    fn parse_unary_expression(&mut self) -> ParseResult {
+        match self.peek() {
+            Some(Token::Add) => {
+                self.advance(); // Consume '+'
+                let expr = self.parse_cast_expression()?;
+                Ok(AstNode::UnaryOperation {
+                    op: "+".to_string(),
+                    operand: Box::new(expr),
+                })
+            },
+            Some(Token::Sub) => {
+                self.advance(); // Consume '-'
+                let expr = self.parse_cast_expression()?;
+                Ok(AstNode::UnaryOperation {
+                    op: "-".to_string(),
+                    operand: Box::new(expr),
+                })
+            },
+            Some(Token::Tilde) => {
+                self.advance(); // Consume '~'
+                let expr = self.parse_cast_expression()?;
+                Ok(AstNode::UnaryOperation {
+                    op: "~".to_string(),
+                    operand: Box::new(expr),
+                })
+            },
+            Some(Token::Not) => {
+                self.advance(); // Consume '!'
+                let expr = self.parse_cast_expression()?;
+                Ok(AstNode::UnaryOperation {
+                    op: "!".to_string(),
+                    operand: Box::new(expr),
+                })
+            },
+            Some(Token::PlusPlus) => {
+                self.advance(); // Consume '++'
+                let expr = self.parse_unary_expression()?;
+                Ok(AstNode::UnaryOperation {
+                    op: "++".to_string(),
+                    operand: Box::new(expr),
+                })
+            },
+            Some(Token::MinusMinus) => {
+                self.advance(); // Consume '--'
+                let expr = self.parse_unary_expression()?;
+                Ok(AstNode::UnaryOperation {
+                    op: "--".to_string(),
+                    operand: Box::new(expr),
+                })
+            },
+            Some(Token::Mul) => { // Pointer dereference
+                self.advance(); // Consume '*'
+                let expr = self.parse_cast_expression()?;
+                Ok(AstNode::UnaryOperation {
+                    op: "*".to_string(),
+                    operand: Box::new(expr),
+                })
+            },
+            Some(Token::BitAnd) => { // Address-of operator
+                self.advance(); // Consume '&'
+                let expr = self.parse_cast_expression()?;
+                Ok(AstNode::UnaryOperation {
+                    op: "&".to_string(),
+                    operand: Box::new(expr),
+                })
+            },
+            _ => self.parse_postfix_expression(),
+        }
+    }
+
+    /// Parse postfix expression
+    fn parse_postfix_expression(&mut self) -> ParseResult {
+        let mut expr = self.parse_primary_expression()?;
+
+        loop {
+            match self.peek() {
+                Some(Token::LBracket) => {
+                    self.advance(); // Consume '['
+                    let index = self.parse_expression()?;
+                    self.consume(&Token::RBracket)?; // Expect ']'
+                    expr = AstNode::ArraySubscript {
+                        array: Box::new(expr),
+                        index: Box::new(index),
+                    };
+                },
+                Some(Token::LParen) => {
+                    self.advance(); // Consume '('
+
+                    // Parse function arguments
+                    let mut args = Vec::new();
+                    if let Some(Token::RParen) = self.peek() {
+                        // Empty argument list
+                    } else {
+                        // Parse at least one argument
+                        args.push(Box::new(self.parse_assignment_expression()?));
+
+                        // Parse additional arguments
+                        while let Some(Token::Comma) = self.peek() {
+                            self.advance(); // Consume ','
+                            args.push(Box::new(self.parse_assignment_expression()?));
+                        }
+                    }
+
+                    self.consume(&Token::RParen)?; // Expect ')'
+                    expr = AstNode::FunctionCall {
+                        function: Box::new(expr),
+                        args,
+                    };
+                },
+                Some(Token::PlusPlus) => {
+                    self.advance(); // Consume '++'
+                    expr = AstNode::UnaryOperation {
+                        op: "post++".to_string(),
+                        operand: Box::new(expr),
+                    };
+                },
+                Some(Token::MinusMinus) => {
+                    self.advance(); // Consume '--'
+                    expr = AstNode::UnaryOperation {
+                        op: "post--".to_string(),
+                        operand: Box::new(expr),
+                    };
+                },
+                // Later: Add support for member access (. and ->)
+                _ => break,
+            }
+        }
+
+        Ok(expr)
+    }
+
+    /// Parse primary expression (literals, identifiers, and parenthesized expressions)
+    fn parse_primary_expression(&mut self) -> ParseResult {
+        match self.peek() {
+            Some(Token::IntLiteralDec((value, _))) => {
+                let val = *value;
+                self.advance();
+                Ok(AstNode::IntConstant(val as i32))
+            },
+            Some(Token::Identifier(name)) => {
+                let id = name.clone();
+                self.advance();
+                Ok(AstNode::Identifier(id))
+            },
+            Some(Token::LParen) => {
+                self.advance(); // Consume '('
+                let expr = self.parse_expression()?;
+                self.consume(&Token::RParen)?; // Expect ')'
+                Ok(expr)
+            },
+            Some(token) => Err(format!("Expected primary expression, found {:?}", token)),
+            None => Err("Unexpected end of input".to_string()),
+        }
     }
 
     /// Parse a declaration
     fn parse_declaration(&mut self) -> ParseResult {
-        Err("Declaration parsing not yet implemented".to_string())
+        // Parse declaration specifiers
+        let type_spec = self.parse_declaration_specifiers()?;
+
+        // If there's just a semicolon, it's a simple type declaration without a declarator
+        if let Some(Token::Semicolon) = self.peek() {
+            self.advance(); // Consume ';'
+            // Create a dummy declaration with no initializer
+            return Ok(AstNode::Declaration {
+                type_spec,
+                declarator: Box::new(AstNode::NodeList(Vec::new())), // Empty declarator
+                initializer: None,
+            });
+        }
+
+        // Parse declarator
+        let declarator = self.parse_declarator()?;
+
+        // Check for initializer
+        let initializer = if let Some(Token::Assign) = self.peek() {
+            self.advance(); // Consume '='
+            Some(Box::new(self.parse_initializer()?))
+        } else {
+            None
+        };
+
+        // Expect semicolon
+        self.consume(&Token::Semicolon)?;
+
+        Ok(AstNode::Declaration {
+            type_spec,
+            declarator: Box::new(declarator),
+            initializer,
+        })
+    }
+
+    /// Parse an initializer
+    fn parse_initializer(&mut self) -> ParseResult {
+        // For now, just handle expression initializers
+        self.parse_assignment_expression()
+    }
+
+    /// Parse an if statement
+    fn parse_if_statement(&mut self) -> ParseResult {
+        self.advance(); // Consume 'if'
+
+        // Expect '('
+        self.consume(&Token::LParen)?;
+
+        // Parse condition
+        let condition = self.parse_expression()?;
+
+        // Expect ')'
+        self.consume(&Token::RParen)?;
+
+        // Parse then-statement
+        let then_stmt = self.parse_statement()?;
+
+        // Check for 'else'
+        let else_stmt = if let Some(Token::ElseKw) = self.peek() {
+            self.advance(); // Consume 'else'
+            Some(Box::new(self.parse_statement()?))
+        } else {
+            None
+        };
+
+        Ok(AstNode::IfStatement {
+            condition: Box::new(condition),
+            then_stmt: Box::new(then_stmt),
+            else_stmt,
+        })
     }
 }
