@@ -1,34 +1,62 @@
 use std::env;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
-use rustc_compiler::{parse_source, ast::AstNode};
-use rustc_compiler::codegen::generate_code;
+use rustc_compiler::{parse_source, codegen::generate_code, error::CompileError, debug::{print_ast, print_symbol_table}};
 
-fn main() -> Result<(), String> {
+fn main() -> Result<(), CompileError> {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        return Err("Usage: rustc_compiler <input.c> <output.s>".to_string());
-    }
 
-    let input_file = &args[1];
-    let output_file = &args[2];
+    // Get the input and output files based on command-line arguments
+    let (input_file, output_file, debug_mode) = match args.len() {
+        // Handle formats:
+        // 1. [compiler] [input] [output]
+        // 2. [compiler] [input] [output] [--debug]
+        3 => {
+            // Basic format: compiler input_file output_file
+            (args[1].clone(), args[2].clone(), false)
+        },
+        4 => {
+            if args[3] == "--debug" {
+                // Format: compiler input_file output_file --debug
+                (args[1].clone(), args[2].clone(), true)
+            } else {
+                return Err(CompileError::IOError("Unexpected argument format".to_string()));
+            }
+        },
+        _ => {
+            return Err(CompileError::IOError(
+                "Usage: rustc_compiler <input.c> <output.s> [--debug]".to_string()
+            ));
+        }
+    };
 
     // Read input file
-    let source = fs::read_to_string(input_file)
-        .map_err(|e| format!("Error reading file: {}", e))?;
+    let source = fs::read_to_string(&input_file)
+        .map_err(|e| CompileError::IOError(format!("Error reading file: {}", e)))?;
 
     // Parse source to AST
     let ast = parse_source(&source)?;
 
+    if debug_mode {
+        eprintln!("--- Debug: AST ---");
+        eprintln!("{}", print_ast(&ast));
+    }
+
     // Generate assembly code
-    let assembly = generate_code(&ast);
+    let assembly = generate_code(&ast)?;
+
+    if debug_mode {
+        // Removing the undefined context reference
+        eprintln!("--- Debug: Symbol Table ---");
+        // We'll need to implement this function correctly
+        // eprintln!("{}", print_symbol_table(&context));
+    }
 
     // Write to output file
-    let mut file = fs::File::create(output_file)
-        .map_err(|e| format!("Error creating output file: {}", e))?;
+    let mut file = fs::File::create(&output_file)
+        .map_err(|e| CompileError::IOError(format!("Error creating output file: {}", e)))?;
     file.write_all(assembly.as_bytes())
-        .map_err(|e| format!("Error writing to file: {}", e))?;
+        .map_err(|e| CompileError::IOError(format!("Error writing to file: {}", e)))?;
 
     println!("Successfully compiled {} to {}", input_file, output_file);
     Ok(())

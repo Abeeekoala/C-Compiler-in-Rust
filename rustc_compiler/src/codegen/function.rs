@@ -1,47 +1,33 @@
 use crate::ast::AstNode;
 use crate::codegen::context::CodeGenContext;
 use crate::codegen::statement::generate_statement;
+use crate::error::CompileError;
 
 /// Generate code for a function definition
-pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) {
-    if let AstNode::FunctionDefinition { declarator, compound_statement, .. } = node {
+pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
+    if let AstNode::FunctionDefinition { decl_specifiers: _, declarator, compound_statement } = node {
         // Get function name
-        let func_name = if let AstNode::Identifier(name) = &**declarator {
-            name
-        } else {
-            return; // Not a valid function
+        let func_name = match &**declarator {
+            AstNode::Identifier(name) => name,
+            _ => return Err(CompileError::CodegenError("Invalid function declarator".to_string())),
         };
 
-        // Set current function
-        context.current_function = Some(func_name.clone());
-
-        // Emit function label
-        context.emit(&format!(".globl {}", func_name));
+        // Generate function prologue
+        context.emit(&format!("    .text"));
+        context.emit(&format!("    .globl {}", func_name));
         context.emit(&format!("{}:", func_name));
 
-        // Prologue: save frame pointer and return address
-        context.stack_offset = 16; // Space for saved ra and s0
-        context.emit(&format!("    addi sp, sp, -{}", context.stack_offset));
-        context.emit("    sw ra, 12(sp)");
-        context.emit("    sw s0, 0(sp)");
-        context.emit("    addi s0, sp, 0");  // Set frame pointer
+        // Generate function prologue
+        context.generate_function_prologue();
 
-        // Generate code for function body
-        generate_statement(compound_statement, context);
+        // Generate function body
+        generate_statement(compound_statement, context)?;
 
-        // If function doesn't end with return, add one
-        if let AstNode::NodeList(statements) = &**compound_statement {
-            if statements.is_empty() || !matches!(statements.last().unwrap(), AstNode::ReturnStatement(_)) {
-                // Add implicit return
-                context.emit("    li a0, 0");  // Return 0 by default
-                context.emit("    lw ra, 12(sp)");
-                context.emit("    lw s0, 0(sp)");
-                context.emit(&format!("    addi sp, sp, {}", context.stack_offset));
-                context.emit("    ret");
-            }
-        }
+        // If we reach here without a return, add a default return
+        context.generate_function_epilogue();
 
-        // Clear current function
-        context.current_function = None;
+        Ok(())
+    } else {
+        Err(CompileError::CodegenError("Expected function definition".to_string()))
     }
 }

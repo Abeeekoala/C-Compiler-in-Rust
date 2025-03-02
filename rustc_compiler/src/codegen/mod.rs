@@ -1,14 +1,14 @@
-mod context;
-mod expression;
-mod statement;
-mod function;
+pub mod context;
+pub mod expression;
+pub mod function;
+pub mod statement;
 
 use crate::ast::AstNode;
-use context::CodeGenContext;
+use crate::error::CompileError;
 
 /// Generate RISC-V assembly code from an AST
-pub fn generate_code(ast: &AstNode) -> String {
-    let mut context = CodeGenContext::new();
+pub fn generate_code(ast: &AstNode) -> Result<String, CompileError> {
+    let mut context = context::CodeGenContext::new();
 
     // Data section
     context.emit(".data");
@@ -16,25 +16,25 @@ pub fn generate_code(ast: &AstNode) -> String {
     // Text section
     context.emit(".text");
 
-    // Generate code based on AST node type
+    // Generate code for each top-level declaration
     match ast {
         AstNode::NodeList(nodes) => {
             for node in nodes {
-                match node {
+                match &**node {
                     AstNode::FunctionDefinition { .. } => {
-                        function::generate_function(node, &mut context);
+                        function::generate_function(node, &mut context)?;
                     },
-                    // Add cases for other top-level declarations
-                    _ => {}
+                    // Handle other top-level declarations
+                    _ => return Err(CompileError::CodegenError("Unsupported top-level declaration".to_string())),
                 }
             }
         },
+        // Handle single function case
         AstNode::FunctionDefinition { .. } => {
-            function::generate_function(ast, &mut context);
+            function::generate_function(ast, &mut context)?;
         },
-        // Handle single-node AST (usually for testing)
-        _ => {}
+        _ => return Err(CompileError::CodegenError("Expected translation unit".to_string())),
     }
 
-    context.output
+    Ok(context.get_assembly())
 }

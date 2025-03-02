@@ -1,88 +1,87 @@
 use crate::ast::AstNode;
 use crate::codegen::context::CodeGenContext;
 use crate::codegen::expression::generate_expression;
+use crate::error::CompileError;
 
 /// Generate code for a statement
-pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) {
+pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
     match node {
-        AstNode::ReturnStatement(expr) => generate_return_statement(expr, context),
-        AstNode::NodeList(statements) => {
-            for stmt in statements {
-                generate_statement(stmt, context);
+        AstNode::ReturnStatement(_) => generate_return_statement(node, context),
+        AstNode::IfStatement { .. } => generate_if_statement(node, context),
+        AstNode::BlockStatement(stmts) => {
+            for stmt in stmts {
+                generate_statement(stmt, context)?;
             }
+            Ok(())
         },
-        AstNode::IfStatement { condition, then_stmt, else_stmt } => {
-            generate_if_statement(condition, then_stmt, else_stmt, context);
-        },
-        _ => {
-            // For expressions used as statements, evaluate but discard result
-            if let Some(reg) = generate_expression(node, context) {
-                context.free_register(&reg);
-            }
-        }
+        AstNode::ExpressionStatement(_) => generate_expression_statement(node, context),
+        _ => Err(CompileError::CodegenError(format!("Unsupported statement type: {:?}", node))),
     }
 }
 
 /// Generate code for an if statement
-fn generate_if_statement(
-    condition: &AstNode,
-    then_stmt: &AstNode,
-    else_stmt: &Option<Box<AstNode>>,
-    context: &mut CodeGenContext
-) {
-    // Generate unique labels for this if statement
-    let else_label = context.generate_label("else");
-    let end_if_label = context.generate_label("endif");
+fn generate_if_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
+    if let AstNode::IfStatement { condition, then_stmt, else_stmt } = node {
+        let end_label = context.generate_label("if_end");
+        let else_label = context.generate_label("if_else");
 
-    // Generate code for the condition expression
-    let cond_reg = match generate_expression(condition, context) {
-        Some(reg) => reg,
-        None => return, // If we can't generate the condition, just return
-    };
+        // Generate code for condition
+        let cond_reg = generate_expression(condition, context)?;
 
-    // Branch to else or end if condition is false
-    if else_stmt.is_some() {
-        context.emit(&format!("    beqz {}, {}", cond_reg, else_label));
-    } else {
-        context.emit(&format!("    beqz {}, {}", cond_reg, end_if_label));
-    }
-
-    // Free the condition register
-    context.free_register(&cond_reg);
-
-    // Generate code for the then clause
-    generate_statement(then_stmt, context);
-
-    // If there's an else clause, add a jump to skip it after executing the then clause
-    if else_stmt.is_some() {
-        context.emit(&format!("    j {}", end_if_label));
-        context.emit(&format!("{}:", else_label));
-
-        // Generate code for the else clause
-        if let Some(else_statement) = else_stmt {
-            generate_statement(else_statement, context);
+        // Generate branch
+        if else_stmt.is_some() {
+            context.emit(&format!("    beqz {}, {}", cond_reg, else_label));
+        } else {
+            context.emit(&format!("    beqz {}, {}", cond_reg, end_label));
         }
-    }
 
-    // End of if statement
-    context.emit(&format!("{}:", end_if_label));
+        // Free the condition register
+        context.free_register(&cond_reg);
+
+        // Generate then statement
+        generate_statement(then_stmt, context)?;
+
+        // Handle else branch if it exists
+        if let Some(else_branch) = else_stmt {
+            context.emit(&format!("    j {}", end_label));
+            context.emit(&format!("{}:", else_label));
+            generate_statement(else_branch, context)?;
+        }
+
+        context.emit(&format!("{}:", end_label));
+        Ok(())
+    } else {
+        Err(CompileError::CodegenError("Expected if statement".to_string()))
+    }
 }
 
 /// Generate code for a return statement
-fn generate_return_statement(expr: &Option<Box<AstNode>>, context: &mut CodeGenContext) {
-    if let Some(expr) = expr {
-        // Generate code to evaluate the expression and put result in a0
-        if let Some(reg) = generate_expression(expr, context) {
-            if reg != "a0" {
-                context.emit(&format!("    mv a0, {}", reg));
-            }
+fn generate_return_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
+    if let AstNode::ReturnStatement(expr) = node {
+        if let Some(expr) = expr {
+            // Generate the expression and move result to a0
+            let reg = generate_expression(expr, context)?;
+            context.emit(&format!("    mv a0, {}", reg));
             context.free_register(&reg);
         }
-    }
 
-    // Epilogue: restore frame pointer and return
-    context.emit("    lw ra, 12(sp)");
-    context.emit("    lw s0, 0(sp)");
-    context.emit(&format!("    addi sp, sp, {}", context.stack_offset));
-    context.emit("    ret");
+        // Generate epilogue
+        context.generate_function_epilogue();
+
+        Ok(())
+    } else {
+        Err(CompileError::CodegenError("Expected return statement".to_string()))
+    }
+}
+
+/// Generate code for an expression statement
+fn generate_expression_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
+    if let AstNode::ExpressionStatement(expr) = node {
+        let reg = generate_expression(expr, context)?;
+        // Free the register used by the expression
+        context.free_register(&reg);
+        Ok(())
+    } else {
+        Err(CompileError::CodegenError("Expected expression statement".to_string()))
+    }
 }

@@ -13,11 +13,11 @@ pub struct Context {
 }
 
 /// The different kinds of AST nodes.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AstNode {
     /// A function definition (e.g. int main() { ... }).
     FunctionDefinition {
-        decl_specifiers: TypeSpecifier,
+        decl_specifiers: Vec<Box<AstNode>>,
         declarator: Box<AstNode>,
         compound_statement: Box<AstNode>,
     },
@@ -56,7 +56,7 @@ pub enum AstNode {
         initializer: Option<Box<AstNode>>,
     },
     /// A list of nodes (for compound statements or translation units).
-    NodeList(Vec<AstNode>),
+    NodeList(Vec<Box<AstNode>>),
     /// Binary operations (e.g., a + b, a * b)
     BinaryOperation {
         op: String,
@@ -95,35 +95,52 @@ pub enum AstNode {
         then_stmt: Box<AstNode>,
         else_stmt: Option<Box<AstNode>>,
     },
+    /// Expression statement - expression followed by a semicolon
+    ExpressionStatement(Box<AstNode>),
+    /// Integer literal with a value
+    IntegerLiteral(i32),
+    /// Block statement (for compound statements)
+    BlockStatement(Vec<Box<AstNode>>),
+    /// Add TypeSpecifier to hold types
+    TypeSpecifier(TypeSpecifier),
 }
 
 /// Binary operators
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOperator {
-    Add, Sub, Mul, Div, Mod,
-    BitAnd, BitOr, BitXor,
-    LogicAnd, LogicOr,
-    Equal, NotEqual,
-    Less, LessEqual, Greater, GreaterEqual,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    Equal,
+    NotEqual,
+    LessThan,
+    GreaterThan,
+    LessThanOrEqual,
+    GreaterThanOrEqual,
+    // Add any other binary operators you need
 }
 
 /// Unary operators
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOperator {
-    Negate, // -
-    Not,    // !
-    BitNot, // ~
+    Negate,
+    Not,
+    // Add any other unary operators you need
 }
 
 /// A simple type specifier enum.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypeSpecifier {
     Void,
+    Char,
+    Short,
     Int,
+    Long,
     Float,
     Double,
-    Char,
-    // Add other types as needed
+    // Add any other type specifiers you need
 }
 
 impl Node for AstNode {

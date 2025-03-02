@@ -4,50 +4,50 @@ use crate::lexer::Token;
 use crate::ast::{AstNode, TypeSpecifier, Context};
 use std::iter::Peekable;
 use std::vec::IntoIter;
-
+use crate::error::CompileError;
 /// The parser struct holds the list of tokens and provides methods to parse them.
 pub struct Parser {
-    tokens: Peekable<IntoIter<Token>>,
+    tokens: Vec<Token>,
+    current: usize,
 }
 
-type ParseResult = Result<AstNode, String>;
+type ParseResult = Result<AstNode, CompileError>;
 
 impl Parser {
     /// Create a new parser from a vector of tokens.
     pub fn new(tokens: Vec<Token>) -> Self {
         Parser {
-            tokens: tokens.into_iter().peekable(),
+            tokens,
+            current: 0,
         }
-    }
-
-    /// Consume the current token if it matches the expected token
-    fn consume(&mut self, expected: &Token) -> Result<(), String> {
-        if let Some(token) = self.tokens.peek() {
-            if token == expected {
-                self.tokens.next();
-                return Ok(());
-            }
-            return Err(format!("Expected {:?}, found {:?}", expected, token));
-        }
-        Err("Unexpected end of input".to_string())
     }
 
     /// Peek at the current token without consuming it
-    fn peek(&mut self) -> Option<&Token> {
-        self.tokens.peek()
+    fn peek(&self) -> Option<&Token> {
+        if self.current < self.tokens.len() {
+            Some(&self.tokens[self.current])
+        } else {
+            None
+        }
     }
 
     /// Advance to the next token and return the previous token
     fn advance(&mut self) -> Option<Token> {
-        self.tokens.next()
+        if self.current < self.tokens.len() {
+            let token = self.tokens[self.current].clone();
+            self.current += 1;
+            Some(token)
+        } else {
+            None
+        }
     }
 
     /// Parse a translation unit (the root of the AST)
     pub fn parse_translation_unit(&mut self) -> ParseResult {
         let mut declarations = Vec::new();
 
-        while self.peek().is_some() {
-            declarations.push(self.parse_external_declaration()?);
+        while self.current < self.tokens.len() {
+            declarations.push(Box::new(self.parse_external_declaration()?));
         }
 
         Ok(AstNode::NodeList(declarations))
@@ -67,7 +67,9 @@ impl Parser {
     /// Parse a function definition
     pub fn parse_function_definition(&mut self) -> ParseResult {
         // Parse declaration specifiers
-        let decl_spec = self.parse_declaration_specifiers()?;
+        let type_spec = self.parse_declaration_specifiers()?;
+        let mut decl_spec = Vec::new();
+        decl_spec.push(Box::new(AstNode::TypeSpecifier(type_spec)));
 
         // Parse declarator
         let declarator = self.parse_declarator()?;
@@ -83,18 +85,17 @@ impl Parser {
     }
 
     /// Parse declaration specifiers
-    fn parse_declaration_specifiers(&mut self) -> Result<TypeSpecifier, String> {
-        match self.peek() {
-            Some(Token::IntKw) => {
-                self.advance();
-                Ok(TypeSpecifier::Int)
-            },
-            Some(Token::VoidKw) => {
-                self.advance();
-                Ok(TypeSpecifier::Void)
-            },
-            Some(token) => Err(format!("Expected type specifier, found {:?}", token)),
-            None => Err("Unexpected end of input".to_string()),
+    fn parse_declaration_specifiers(&mut self) -> Result<TypeSpecifier, CompileError> {
+        if let Some(token) = self.advance() {
+            match token {
+                Token::IntKw => Ok(TypeSpecifier::Int),
+                Token::VoidKw => Ok(TypeSpecifier::Void),
+                Token::CharKw => Ok(TypeSpecifier::Char),
+                // Add other type specifiers as needed
+                _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token))),
+            }
+        } else {
+            Err(CompileError::ParserError("Unexpected end of file".to_string()))
         }
     }
 
@@ -113,43 +114,33 @@ impl Parser {
                     self.advance(); // Consume ')'
                     return Ok(id_node);
                 } else {
-                    return Err("Expected ')' after parameter list".to_string());
+                    return Err(CompileError::ParserError("Expected ')' after parameter list".to_string()));
                 }
             }
 
             return Ok(id_node);
         }
 
-        Err("Expected identifier in declarator".to_string())
+        Err(CompileError::ParserError("Expected identifier in declarator".to_string()))
     }
 
     /// Parse a compound statement
     fn parse_compound_statement(&mut self) -> ParseResult {
         // Expect '{'
-        if let Some(Token::LBrace) = self.peek() {
-            self.advance(); // Consume '{'
+        self.expect_token(Token::LBrace)?;
 
-            let mut statements = Vec::new();
+        let mut statements = Vec::new();
 
-            // Parse statements until '}'
-            while let Some(token) = self.peek() {
-                if *token == Token::RBrace {
-                    break;
-                }
-
-                statements.push(self.parse_statement()?);
-            }
-
-            // Expect '}'
-            if let Some(Token::RBrace) = self.peek() {
-                self.advance(); // Consume '}'
-                return Ok(AstNode::NodeList(statements));
-            } else {
-                return Err("Expected '}' to close compound statement".to_string());
-            }
+        // Parse statements until '}'
+        while !self.check_token(Token::RBrace) {
+            statements.push(Box::new(self.parse_statement()?));
         }
 
-        Err("Expected '{' to start compound statement".to_string())
+        // Expect '}'
+        self.expect_token(Token::RBrace)?;
+
+        // Return block/compound statement
+        Ok(AstNode::BlockStatement(statements))
     }
 
     /// Parse a statement
@@ -182,7 +173,7 @@ impl Parser {
             return Ok(AstNode::ReturnStatement(expr));
         }
 
-        Err("Expected ';' after return statement".to_string())
+        Err(CompileError::ParserError("Expected ';' after return statement".to_string()))
     }
 
     /// Parse an expression statement
@@ -195,7 +186,7 @@ impl Parser {
             return Ok(expr);
         }
 
-        Err("Expected ';' after expression".to_string())
+        Err(CompileError::ParserError("Expected ';' after expression".to_string()))
     }
 
     /// Parse an expression
@@ -256,7 +247,7 @@ impl Parser {
             let true_expr = self.parse_expression()?;
 
             // Expect ':'
-            self.consume(&Token::Colon)?;
+            self.expect_token(Token::Colon)?;
 
             // Parse the false expression
             let false_expr = self.parse_conditional_expression()?;
@@ -562,7 +553,7 @@ impl Parser {
                 Some(Token::LBracket) => {
                     self.advance(); // Consume '['
                     let index = self.parse_expression()?;
-                    self.consume(&Token::RBracket)?; // Expect ']'
+                    self.expect_token(Token::RBracket)?; // Expect ']'
                     expr = AstNode::ArraySubscript {
                         array: Box::new(expr),
                         index: Box::new(index),
@@ -586,7 +577,7 @@ impl Parser {
                         }
                     }
 
-                    self.consume(&Token::RParen)?; // Expect ')'
+                    self.expect_token(Token::RParen)?; // Expect ')'
                     expr = AstNode::FunctionCall {
                         function: Box::new(expr),
                         args,
@@ -630,11 +621,11 @@ impl Parser {
             Some(Token::LParen) => {
                 self.advance(); // Consume '('
                 let expr = self.parse_expression()?;
-                self.consume(&Token::RParen)?; // Expect ')'
+                self.expect_token(Token::RParen)?; // Expect ')'
                 Ok(expr)
             },
-            Some(token) => Err(format!("Expected primary expression, found {:?}", token)),
-            None => Err("Unexpected end of input".to_string()),
+            Some(token) => Err(CompileError::ParserError(format!("Expected primary expression, found {:?}", token))),
+            None => Err(CompileError::ParserError("Unexpected end of file".to_string())),
         }
     }
 
@@ -666,7 +657,7 @@ impl Parser {
         };
 
         // Expect semicolon
-        self.consume(&Token::Semicolon)?;
+        self.expect_token(Token::Semicolon)?;
 
         Ok(AstNode::Declaration {
             type_spec,
@@ -686,13 +677,13 @@ impl Parser {
         self.advance(); // Consume 'if'
 
         // Expect '('
-        self.consume(&Token::LParen)?;
+        self.expect_token(Token::LParen)?;
 
         // Parse condition
         let condition = self.parse_expression()?;
 
         // Expect ')'
-        self.consume(&Token::RParen)?;
+        self.expect_token(Token::RParen)?;
 
         // Parse then-statement
         let then_stmt = self.parse_statement()?;
@@ -710,5 +701,25 @@ impl Parser {
             then_stmt: Box::new(then_stmt),
             else_stmt,
         })
+    }
+
+    fn expect_token(&mut self, expected: Token) -> Result<(), CompileError> {
+        if let Some(token) = self.advance() {
+            if token == expected {
+                Ok(())
+            } else {
+                Err(CompileError::ParserError(format!("Expected {:?}, found {:?}", expected, token)))
+            }
+        } else {
+            Err(CompileError::ParserError("Unexpected end of file".to_string()))
+        }
+    }
+
+    fn check_token(&mut self, expected: Token) -> bool {
+        if let Some(token) = self.peek() {
+            token == &expected
+        } else {
+            false
+        }
     }
 }

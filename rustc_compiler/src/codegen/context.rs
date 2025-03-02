@@ -36,6 +36,10 @@ pub struct CodeGenContext {
     pub used_temp_registers: Vec<String>,
     /// Available temporary registers
     pub available_temp_registers: Vec<String>,
+    /// Add a variable table to track variables
+    variables: HashMap<String, (i32, String)>, // (offset, type)
+    /// Next temporary register
+    next_temp_reg: usize,
 }
 
 impl CodeGenContext {
@@ -54,6 +58,8 @@ impl CodeGenContext {
             output: String::new(),
             used_temp_registers: Vec::new(),
             available_temp_registers: temp_regs.iter().map(|&s| s.to_string()).collect(),
+            variables: HashMap::new(),
+            next_temp_reg: 0,
         }
     }
 
@@ -104,5 +110,61 @@ impl CodeGenContext {
     /// Look up a symbol in the symbol table
     pub fn lookup_symbol(&self, name: &str) -> Option<&Symbol> {
         self.symbols.get(name)
+    }
+
+    /// Get a variable's offset and type from the symbol table
+    pub fn get_variable(&self, name: &str) -> Option<(i32, String)> {
+        self.variables.get(name).cloned()
+    }
+
+    /// Generate the function prologue
+    pub fn generate_function_prologue(&mut self) {
+        // Save frame pointer and return address
+        self.emit("    addi sp, sp, -16");
+        self.emit("    sw ra, 12(sp)");
+        self.emit("    sw s0, 0(sp)");
+        self.emit("    addi s0, sp, 0");
+
+        self.stack_offset = 0;
+    }
+
+    /// Generate the function epilogue
+    pub fn generate_function_epilogue(&mut self) {
+        // Restore frame pointer and return address
+        self.emit("    lw ra, 12(sp)");
+        self.emit("    lw s0, 0(sp)");
+        self.emit("    addi sp, sp, 16");
+        self.emit("    ret");
+    }
+
+    /// Get the generated assembly code
+    pub fn get_assembly(&self) -> String {
+        self.output.clone()
+    }
+
+    /// Add a variable to the symbol table
+    pub fn add_variable(&mut self, name: String, type_name: String) -> i32 {
+        // Allocate space on the stack for the variable
+        self.stack_offset -= 4;
+        let offset = self.stack_offset;
+
+        // Add variable to symbol table
+        self.variables.insert(name, (offset, type_name));
+
+        offset
+    }
+
+    /// Get a free register for temporary values
+    pub fn get_register(&mut self) -> String {
+        // Check if we have any free registers
+        if !self.used_temp_registers.is_empty() {
+            return self.used_temp_registers.pop().unwrap();
+        }
+
+        // Create a new temporary register name if we're out of registers
+        // Using t0, t1, etc. for temporary registers
+        let reg_num = self.next_temp_reg;
+        self.next_temp_reg += 1;
+        format!("t{}", reg_num)
     }
 }

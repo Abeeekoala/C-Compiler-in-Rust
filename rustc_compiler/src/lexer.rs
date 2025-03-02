@@ -1,11 +1,11 @@
 // src/lexer.rs
 
 use logos::Logos;
-
+use crate::error::CompileError;
 /// The set of tokens that our C90 lexer will recognize.
 ///
 /// Keyword tokens are suffixed with `Kw` to differentiate them from literal tokens.
-#[derive(Logos, Debug, PartialEq)]
+#[derive(Logos, Debug, PartialEq, Clone)]
 pub enum Token {
     // --- Keywords (expanded to match the Flex file) ---
     #[token("auto")]
@@ -295,13 +295,13 @@ fn parse_float(slice: &str) -> (f64, Option<String>) {
 }
 
 /// Tokenize a string into a vector of tokens.
-pub fn tokenize(source: &str) -> Result<Vec<Token>, String> {
+pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
     let mut lexer = Token::lexer(source);
     let mut tokens = Vec::new();
 
     while let Some(token) = lexer.next() {
         match token {
-            Token::Error => return Err(format!("Lexical error at position {}", lexer.span().start)),
+            Token::Error => return Err(CompileError::LexerError(format!("Lexical error at position {}", lexer.span().start))),
             _ => tokens.push(token),
         }
     }
