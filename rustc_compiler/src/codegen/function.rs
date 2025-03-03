@@ -5,28 +5,31 @@ use crate::error::CompileError;
 
 /// Generate code for a function definition
 pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
-    if let AstNode::FunctionDefinition { decl_specifiers: _, declarator, compound_statement } = node {
-        // Get function name
-        let func_name = match &**declarator {
-            AstNode::Identifier(name) => name,
-            _ => return Err(CompileError::CodegenError("Invalid function declarator".to_string())),
-        };
+    if let AstNode::FunctionDefinition { declarator, compound_statement, .. } = node {
+        // Get the function name
+        if let AstNode::Identifier(name) = &**declarator {
+            // Set current function name
+            context.current_function = Some(name.clone());
 
-        // Generate function prologue
-        context.emit(&format!("    .text"));
-        context.emit(&format!("    .globl {}", func_name));
-        context.emit(&format!("{}:", func_name));
+            // Generate function label
+            context.emit(&format!(".globl {}", name));
+            context.emit(&format!("{}:", name));
 
-        // Generate function prologue
-        context.generate_function_prologue();
+            // Generate function prologue
+            context.generate_function_prologue();
 
-        // Generate function body
-        generate_statement(compound_statement, context)?;
+            // Generate code for function body
+            generate_statement(compound_statement, context)?;
 
-        // If we reach here without a return, add a default return
-        context.generate_function_epilogue();
+            // If there's no explicit return at the end, add one
+            if !context.output.trim().ends_with("ret") {
+                context.generate_function_epilogue();
+            }
 
-        Ok(())
+            Ok(())
+        } else {
+            Err(CompileError::CodegenError("Expected function name".to_string()))
+        }
     } else {
         Err(CompileError::CodegenError("Expected function definition".to_string()))
     }

@@ -103,6 +103,13 @@ pub enum AstNode {
     BlockStatement(Vec<Box<AstNode>>),
     /// Add TypeSpecifier to hold types
     TypeSpecifier(TypeSpecifier),
+    /// Variable declaration
+    VariableDeclaration {
+        type_spec: TypeSpecifier,
+        declarator: Box<AstNode>,
+        initializer: Option<Box<AstNode>>,
+    },
+
 }
 
 /// Binary operators

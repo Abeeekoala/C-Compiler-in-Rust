@@ -15,6 +15,21 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
             Ok(())
         },
         AstNode::ExpressionStatement(_) => generate_expression_statement(node, context),
+        AstNode::Declaration { type_spec, declarator, initializer } => {
+            // Generate code for a single declaration
+            if let AstNode::Identifier(name) = &**declarator {
+                // Allocate space for the variable
+                let offset = context.add_variable(name.to_string(), "int".to_string());
+
+                // Initialize if an initializer is present
+                if let Some(init_expr) = initializer {
+                    let reg = generate_expression(init_expr, context)?;
+                    context.emit(&format!("    sw {}, {}(s0)", reg, offset));
+                    context.free_register(&reg);
+                }
+            }
+            Ok(())
+        },
         _ => Err(CompileError::CodegenError(format!("Unsupported statement type: {:?}", node))),
     }
 }
@@ -83,5 +98,28 @@ fn generate_expression_statement(node: &AstNode, context: &mut CodeGenContext) -
         Ok(())
     } else {
         Err(CompileError::CodegenError("Expected expression statement".to_string()))
+    }
+}
+
+fn generate_declaration_item(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
+    if let AstNode::VariableDeclaration { declarator, initializer, .. } = node {
+        if let AstNode::Identifier(name) = &**declarator {
+            // Allocate space for the variable
+            // Pass a String for the name and "int" as the type name
+            let offset = context.add_variable(name.to_string(), "int".to_string());
+
+            // Initialize if an initializer is present
+            if let Some(init_expr) = initializer {
+                let reg = generate_expression(init_expr, context)?;
+                context.emit(&format!("    sw {}, {}(s0)", reg, offset));
+                context.free_register(&reg);
+            }
+
+            Ok(())
+        } else {
+            Err(CompileError::CodegenError("Expected identifier in variable declaration".to_string()))
+        }
+    } else {
+        Err(CompileError::CodegenError("Expected variable declaration".to_string()))
     }
 }

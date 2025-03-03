@@ -37,7 +37,7 @@ pub struct CodeGenContext {
     /// Available temporary registers
     pub available_temp_registers: Vec<String>,
     /// Add a variable table to track variables
-    variables: HashMap<String, (i32, String)>, // (offset, type)
+    pub variables: HashMap<String, (i32, String)>, // (offset, type)
     /// Next temporary register
     next_temp_reg: usize,
 }

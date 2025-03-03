@@ -43,13 +43,11 @@ fn main() -> Result<(), CompileError> {
     }
 
     // Generate assembly code
-    let assembly = generate_code(&ast)?;
+    let (assembly, context) = generate_code(&ast)?;
 
     if debug_mode {
-        // Removing the undefined context reference
         eprintln!("--- Debug: Symbol Table ---");
-        // We'll need to implement this function correctly
-        // eprintln!("{}", print_symbol_table(&context));
+        eprintln!("{}", print_symbol_table(&context));
     }
 
     // Write to output file

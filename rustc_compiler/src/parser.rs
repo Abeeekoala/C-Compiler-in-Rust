@@ -144,16 +144,45 @@ impl Parser {
     }
 
     /// Parse a statement
-    fn parse_statement(&mut self) -> ParseResult {
+    pub fn parse_statement(&mut self) -> Result<AstNode, CompileError> {
         match self.peek() {
-            Some(Token::ReturnKw) => self.parse_return_statement(),
-            Some(Token::LBrace) => self.parse_compound_statement(),
+            // Empty statement (just a semicolon)
             Some(Token::Semicolon) => {
-                self.advance(); // Consume ';'
-                Ok(AstNode::NodeList(Vec::new())) // Empty statement
+                self.advance(); // Consume the semicolon
+                Ok(AstNode::ExpressionStatement(Box::new(AstNode::NodeList(Vec::new()))))
             },
-            Some(Token::IfKw) => self.parse_if_statement(),
-            _ => self.parse_expression_statement(),
+
+            // Declaration statements
+            Some(Token::IntKw) | Some(Token::CharKw) | Some(Token::VoidKw) => {
+                self.parse_declaration()
+            },
+
+            // Compound statements
+            Some(Token::LBrace) => {
+                self.parse_compound_statement()
+            },
+
+            // If statements
+            Some(Token::IfKw) => {
+                self.parse_if_statement()
+            },
+
+            // Return statements
+            Some(Token::ReturnKw) => {
+                self.parse_return_statement()
+            },
+
+            // Expression statements (e.g., function calls, assignments)
+            _ => {
+                let expr = self.parse_expression()?;
+                 // Expect ';'
+                if let Some(Token::Semicolon) = self.peek() {
+                    self.advance();
+                    Ok(AstNode::ExpressionStatement(Box::new(expr)))
+                } else {
+                    Err(CompileError::ParserError("Expected ';' after statement".to_string()))
+                }
+            }
         }
     }
 
@@ -630,46 +659,33 @@ impl Parser {
     }
 
     /// Parse a declaration
-    fn parse_declaration(&mut self) -> ParseResult {
-        // Parse declaration specifiers
-        let type_spec = self.parse_declaration_specifiers()?;
+    pub fn parse_declaration(&mut self) -> Result<AstNode, CompileError> {
+        // Parse the type specifier (int, char, etc.)
+        let type_specifier = self.parse_type_specifier()?;
 
-        // If there's just a semicolon, it's a simple type declaration without a declarator
-        if let Some(Token::Semicolon) = self.peek() {
-            self.advance(); // Consume ';'
-            // Create a dummy declaration with no initializer
-            return Ok(AstNode::Declaration {
-                type_spec,
-                declarator: Box::new(AstNode::NodeList(Vec::new())), // Empty declarator
-                initializer: None,
-            });
-        }
-
-        // Parse declarator
-        let declarator = self.parse_declarator()?;
+        // Parse the variable identifier
+        let identifier = self.parse_identifier()?;
+        let declarator = Box::new(AstNode::Identifier(identifier));
 
         // Check for initializer
-        let initializer = if let Some(Token::Assign) = self.peek() {
-            self.advance(); // Consume '='
-            Some(Box::new(self.parse_initializer()?))
-        } else {
-            None
+        let initializer = match self.peek() {
+            Some(token) if *token == Token::Assign => {
+                self.expect_token(Token::Assign)?; // Consume the '=' token
+                // Parse the initializer expression
+                Some(Box::new(self.parse_expression()?))
+            },
+            _ => None
         };
 
-        // Expect semicolon
+        // Expect semicolon at the end
         self.expect_token(Token::Semicolon)?;
 
+        // Return Declaration node
         Ok(AstNode::Declaration {
-            type_spec,
-            declarator: Box::new(declarator),
+            type_spec: type_specifier,
+            declarator,
             initializer,
         })
-    }
-
-    /// Parse an initializer
-    fn parse_initializer(&mut self) -> ParseResult {
-        // For now, just handle expression initializers
-        self.parse_assignment_expression()
     }
 
     /// Parse an if statement
@@ -720,6 +736,43 @@ impl Parser {
             token == &expected
         } else {
             false
+        }
+    }
+
+    /// Parses an identifier
+    pub fn parse_identifier(&mut self) -> Result<String, CompileError> {
+        // Clone token first to avoid borrowing issues
+        let token_clone = self.peek()
+            .ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?
+            .clone();
+
+        match token_clone {
+            Token::Identifier(name) => {
+                self.advance(); // Now we can advance
+                Ok(name)
+            },
+            _ => Err(CompileError::ParserError(format!("Expected identifier, found {:?}", token_clone)))
+        }
+    }
+
+    /// Parses a type specifier (int, char, void, etc.)
+    pub fn parse_type_specifier(&mut self) -> Result<TypeSpecifier, CompileError> {
+        let token = self.peek().ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?;
+
+        match token {
+            Token::IntKw => {
+                self.advance();
+                Ok(TypeSpecifier::Int)
+            },
+            Token::CharKw => {
+                self.advance();
+                Ok(TypeSpecifier::Char)
+            },
+            Token::VoidKw => {
+                self.advance();
+                Ok(TypeSpecifier::Void)
+            },
+            _ => Err(CompileError::ParserError("Expected type specifier".to_string()))
         }
     }
 }
