@@ -1,12 +1,28 @@
 #pragma once
+#include <unordered_map>
+#include <string>
 
 namespace ast {
-// An object of class Context is passed between ast nodes during compilation.
-// This can be used to pass around information about what's currently being
-// compiled (e.g. function scope and variable names).
-class Context
-{
-    /* TODO decide what goes inside here */
+
+class Context {
+private:
+    std::unordered_map<std::string, int> variable_offsets_;
+    int stack_offset_ = 0; // Tracks current stack position
+
+public:
+    int AllocateVariable(const std::string& name) {
+        stack_offset_ -= 4; // Reserve 4 bytes for the variable
+        variable_offsets_[name] = stack_offset_;
+        return stack_offset_;
+    }
+
+    int GetVariableOffset(const std::string& name) const {
+        auto it = variable_offsets_.find(name);
+        if (it != variable_offsets_.end()) {
+            return it->second;
+        }
+        throw ("Undefined variable: " + name);
+    }
 };
 
 } // namespace ast

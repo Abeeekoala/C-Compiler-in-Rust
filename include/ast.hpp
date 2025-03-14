@@ -12,5 +12,6 @@
 #include "ast_type_specifier.hpp"
 #include "ast_constant.hpp"
 #include "ast_context.hpp"
+#include "ast_variable_declaration.hpp"
 
 ast::NodePtr ParseAST(std::string file_name);

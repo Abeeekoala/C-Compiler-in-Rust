@@ -1,15 +1,17 @@
 %option noyywrap
+%option yylineno
 
 %{
   // A lot of this lexer is based off the ANSI C grammar:
-  // https://www.lysator.liu.se/c/ANSI-C-grammar-l.html#MUL-ASSIGN
-  // Avoid error "error: `fileno' was not declared in this scope"
+  // https://www.lysator.liu.se/c/ANSI-C-grammar-l.html
+
+  // Avoids error "error: `fileno' was not declared in this scope"
   extern "C" int fileno(FILE *stream);
 
   #include "parser.tab.hpp"
 
   // Suppress warning about unused function
-  [[maybe_unused]] static void yyunput (int c, char * yy_bp );
+  [[maybe_unused]] static void yyunput (int c, char * yy_bp);
 %}
 
 D	  [0-9]
@@ -66,12 +68,7 @@ L?'(\\.|[^\\'])+'	{yylval.number_int = (int)strtol(yytext, NULL, 0); return(INT_
 {D}*"."{D}+({E})?{FS}?	{yylval.number_float = strtod(yytext, NULL); return(FLOAT_CONSTANT);}
 {D}+"."{D}*({E})?{FS}?	{yylval.number_float = strtod(yytext, NULL); return(FLOAT_CONSTANT);}
 
-L?\"(\\.|[^\\"])*\" {
-    std::string str = yytext;
-    str = str.substr(1, str.size() - 2);
-    yylval.string = new std::string(str);
-    return STRING_LITERAL;
-}
+L?\"(\\.|[^\\"])*\"	{/* TODO process string literal */; return(STRING_LITERAL);}
 
 "..."      {return(ELLIPSIS);}
 ">>="			 {return(RIGHT_ASSIGN);}
@@ -121,12 +118,6 @@ L?\"(\\.|[^\\"])*\" {
 "?"			   {return('?');}
 
 [ \a\b\t\v\f\n\r]		{/* ignore new lines and special sequences */}
-.			              {/* ignore bad characters */}
+.			              {std::cerr << "Unknown token: " << yytext << std::endl; return(UNKNOWN);}
 
 %%
-
-void yyerror (char const *s)
-{
-  fprintf(stderr, "Lexing error: %s\n", s);
-  exit(1);
-}
