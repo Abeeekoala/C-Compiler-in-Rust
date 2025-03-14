@@ -258,27 +258,15 @@ impl Parser {
 
     /// Parse assignment expressions
     fn parse_assignment_expression(&mut self) -> ParseResult {
-        // First, try to parse the LHS as a conditional expression
         let lhs = self.parse_conditional_expression()?;
-
-        // Check if next token is an assignment operator
-        if let Some(token) = self.peek() {
-            if let Token::Assign = token {
-                self.advance(); // Consume the '='
-
-                // Parse the RHS, which is another assignment expression
-                let rhs = self.parse_assignment_expression()?;
-
-                return Ok(AstNode::BinaryOperation {
-                    op: "=".to_string(),
-                    left: Box::new(lhs),
-                    right: Box::new(rhs),
-                });
-            }
-            // Later: Add other assignment operators (+=, -=, etc.)
+        if let Some(Token::Assign) = self.peek() {
+            self.advance();
+            let rhs = self.parse_assignment_expression()?;
+            return Ok(AstNode::Assignment {
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
         }
-
-        // If no assignment operator, return the conditional expression
         Ok(lhs)
     }
 

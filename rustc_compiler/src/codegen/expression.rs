@@ -18,6 +18,7 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             // Otherwise it might be a function name or something else
             Err(CompileError::CodegenError(format!("Unknown identifier: {}", name)))
         },
+        AstNode::Assignment { lhs, rhs } => generate_assignment(lhs, rhs, context),
         AstNode::IntegerLiteral(value) => generate_int_constant(*value, context),
         AstNode::BinaryOperation { op, left, right } => generate_binary_operation(op, left, right, context),
         AstNode::Assignment { lhs, rhs } => generate_assignment(lhs, rhs, context),
