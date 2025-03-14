@@ -36,6 +36,10 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             context.emit(&format!("    li {}, {}", reg, value));
             Ok(reg)
         },
+        AstNode::FunctionCall { function, args } => {
+            // Generate code for function call
+            generate_function_call(function, args, context)
+        },
         // Handle other expression types
         _ => Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node))),
     }
@@ -78,6 +82,11 @@ fn generate_binary_operation(
     right: &AstNode,
     context: &mut CodeGenContext
 ) -> Result<String, CompileError> {
+    // Special handling for logical operators with short-circuit evaluation
+    if op == "&&" || op == "||" {
+        return generate_logical_operation(op, left, right, context);
+    }
+
     // Generate code for operands
     let left_reg = generate_expression(left, context)?;
     let right_reg = generate_expression(right, context)?;
@@ -163,69 +172,70 @@ fn generate_binary_operation(
     Ok(result_reg)
 }
 
-// For the relational operators (<, >, <=, >=, ==, !=)
-fn generate_relational_op(left: &AstNode, right: &AstNode, op: &str, context: &mut CodeGenContext) -> Result<String, CompileError> {
-    let left_reg = generate_expression(left, context)?;
-    let right_reg = generate_expression(right, context)?;
+/// Generate code for logical operators with short-circuit evaluation
+fn generate_logical_operation(
+    op: &str,
+    left: &AstNode,
+    right: &AstNode,
+    context: &mut CodeGenContext
+) -> Result<String, CompileError> {
+    // Generate code for left operand
+    let result_reg = generate_expression(left, context)?;
 
-    // Now left_reg and right_reg are String, not Option<String>
-    match op {
-        "<" => {
-            context.emit(&format!("    slt {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            context.free_register(&right_reg);
-            Ok(left_reg)
-        },
-        ">" => {
-            context.emit(&format!("    slt {0}, {1}, {2}", left_reg, right_reg, left_reg));
-            context.free_register(&right_reg);
-            Ok(left_reg)
-        },
-        "<=" => {
-            context.emit(&format!("    slt {0}, {1}, {2}", left_reg, right_reg, left_reg));
-            context.emit(&format!("    xori {0}, {0}, 1", left_reg));
-            context.free_register(&right_reg);
-            Ok(left_reg)
-        },
-        ">=" => {
-            context.emit(&format!("    slt {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            context.emit(&format!("    xori {0}, {0}, 1", left_reg));
-            context.free_register(&right_reg);
-            Ok(left_reg)
-        },
-        "==" => {
-            context.emit(&format!("    xor {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            context.emit(&format!("    seqz {0}, {0}", left_reg));
-            context.free_register(&right_reg);
-            Ok(left_reg)
-        },
-        "!=" => {
-            context.emit(&format!("    xor {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            context.emit(&format!("    snez {0}, {0}", left_reg));
-            context.free_register(&right_reg);
-            Ok(left_reg)
-        },
-        // Arithmetic and bitwise operators
-        "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" => {
-            let instruction = match op {
-                "+" => "add",
-                "-" => "sub",
-                "*" => "mul",
-                "/" => "div",
-                "%" => "rem",
-                "&" => "and",
-                "|" => "or",
-                "^" => "xor",
-                "<<" => "sll",
-                ">>" => "sra",  // Arithmetic shift
-                _ => unreachable!(),
-            };
+    // Generate unique labels for short-circuit evaluation
+    let end_label = context.generate_label("logical_end");
+    let short_circuit_label = context.generate_label("short_circuit");
 
-            context.emit(&format!("    {} {}, {}, {}", instruction, left_reg, left_reg, right_reg));
+    // Normalize left operand to 0 or 1
+    context.emit(&format!("    snez {0}, {0}", result_reg));
+
+    if op == "&&" {
+        // For AND: if left is 0, short-circuit to end (result is already 0)
+        context.emit(&format!("    beqz {}, {}", result_reg, short_circuit_label));
+
+        // Left is 1, evaluate right operand
+        let right_reg = generate_expression(right, context)?;
+
+        // Normalize right operand to 0 or 1
+        context.emit(&format!("    snez {0}, {0}", right_reg));
+
+        // Move right result to result register
+        if result_reg != right_reg {
+            context.emit(&format!("    mv {}, {}", result_reg, right_reg));
             context.free_register(&right_reg);
-            Ok(left_reg)
-        },
-        _ => Err(CompileError::CodegenError(format!("Invalid binary operation: {}", op))),
+        }
+
+        context.emit(&format!("    j {}", end_label));
+        context.emit(&format!("{}:", short_circuit_label));
+        // For short-circuit, result is already 0 in result_reg
+
+    } else if op == "||" {
+        // For OR: if left is 1, short-circuit to end (result is already 1)
+        context.emit(&format!("    bnez {}, {}", result_reg, short_circuit_label));
+
+        // Left is 0, evaluate right operand
+        let right_reg = generate_expression(right, context)?;
+
+        // Normalize right operand to 0 or 1
+        context.emit(&format!("    snez {0}, {0}", right_reg));
+
+        // Move right result to result register
+        if result_reg != right_reg {
+            context.emit(&format!("    mv {}, {}", result_reg, right_reg));
+            context.free_register(&right_reg);
+        }
+
+        context.emit(&format!("    j {}", end_label));
+        context.emit(&format!("{}:", short_circuit_label));
+        // For short-circuit, result is already 1 in result_reg
+
+    } else {
+        return Err(CompileError::CodegenError(format!("Invalid logical operation: {}", op)));
     }
+
+    context.emit(&format!("{}:", end_label));
+
+    Ok(result_reg)
 }
 
 // For assignment operations
@@ -252,3 +262,61 @@ fn generate_assignment(left: &AstNode, right: &AstNode, context: &mut CodeGenCon
 }
 
 // Add implementations for unary operations, function calls, etc.
+
+fn generate_function_call(
+        function: &AstNode,
+        args: &[Box<AstNode>],
+        context: &mut CodeGenContext
+    ) -> Result<String, CompileError> {
+    // Get function name
+    let func_name = match function {
+        AstNode::Identifier(name) => name,
+        _ => return Err(CompileError::CodegenError("Expected function name".to_string())),
+    };
+
+    // Save all used registers before the call (caller-saved registers)
+    let used_regs = context.get_used_registers();
+    for reg in &used_regs {
+        // Push register onto the stack:
+        context.emit("    addi sp, sp, -4");
+        context.emit(&format!("    sw {}, 0(sp)", reg));
+    }
+
+    // Generate code for arguments (in reverse order for stack-based calling)
+    let mut arg_regs = Vec::new();
+    for (i, arg) in args.iter().enumerate().take(8) {
+        let arg_reg = generate_expression(arg, context)?;
+
+        // Move to the appropriate argument register (a0-a7)
+        if arg_reg != format!("a{}", i) {
+            context.emit(&format!("    mv a{}, {}", i, arg_reg));
+        }
+
+        arg_regs.push(arg_reg);
+    }
+
+    // Call the function
+    context.emit(&format!("    call {}", func_name));
+
+    // Get a register for the result
+    let result_reg = context.get_register();
+
+    // Move return value (in a0) to our result register
+    if result_reg != "a0" {
+        context.emit(&format!("    mv {}, a0", result_reg));
+    }
+
+    // Free all argument registers
+    for reg in arg_regs {
+        if reg != result_reg {
+            context.free_register(&reg);
+        }
+    }
+
+    for reg in used_regs.iter().rev() {
+        context.emit(&format!("    lw {}, 0(sp)", reg));
+        context.emit("    addi sp, sp, 4");
+    }
+
+    Ok(result_reg)
+}

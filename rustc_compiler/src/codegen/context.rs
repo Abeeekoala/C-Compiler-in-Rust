@@ -120,9 +120,9 @@ impl CodeGenContext {
     /// Generate the function prologue
     pub fn generate_function_prologue(&mut self) {
         // Save frame pointer and return address
-        self.emit("    addi sp, sp, -16");
-        self.emit("    sw ra, 12(sp)");
-        self.emit("    sw s0, 0(sp)");
+        self.emit("    addi sp, sp, -64");
+        self.emit("    sw ra, 60(sp)");
+        self.emit("    sw s0, 56(sp)");
         self.emit("    addi s0, sp, 0");
 
         self.stack_offset = 0;
@@ -131,9 +131,9 @@ impl CodeGenContext {
     /// Generate the function epilogue
     pub fn generate_function_epilogue(&mut self) {
         // Restore frame pointer and return address
-        self.emit("    lw ra, 12(sp)");
-        self.emit("    lw s0, 0(sp)");
-        self.emit("    addi sp, sp, 16");
+        self.emit("    lw ra, 60(sp)");
+        self.emit("    lw s0, 56(sp)");
+        self.emit("    addi sp, sp, 64");
         self.emit("    ret");
     }
 
@@ -166,5 +166,14 @@ impl CodeGenContext {
         let reg_num = self.next_temp_reg;
         self.next_temp_reg += 1;
         format!("t{}", reg_num)
+    }
+
+    pub fn get_used_registers(&self) -> Vec<String> {
+        self.used_temp_registers.clone()
+    }
+
+    pub fn reset_temp_registers(&mut self) {
+        self.used_temp_registers.clear();
+        self.next_temp_reg = 0;
     }
 }

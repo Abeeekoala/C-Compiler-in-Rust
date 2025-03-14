@@ -33,6 +33,12 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
             }
             Ok(())
         },
+        AstNode::FunctionDeclaration { .. } => {
+            // Function declarations are just prototypes and don't generate code
+            // We can emit a comment for debugging purposes
+            context.emit(&format!("    # Function declaration: {:?}", node));
+            Ok(())
+        },
         _ => Err(CompileError::CodegenError(format!("Unsupported statement type: {:?}", node))),
     }
 }

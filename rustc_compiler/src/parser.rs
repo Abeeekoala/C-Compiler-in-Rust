@@ -55,13 +55,66 @@ impl Parser {
 
     /// Parse an external declaration (function or global variable)
     fn parse_external_declaration(&mut self) -> ParseResult {
-        // Try to parse a function definition first
-        if let Ok(func) = self.parse_function_definition() {
-            return Ok(func);
+        // Save current position in case we need to backtrack
+        let start_pos = self.current;
+
+        // Parse declaration specifiers
+        let type_spec = self.parse_declaration_specifiers()?;
+
+        // Parse identifier
+        let identifier = self.parse_identifier()?;
+
+        // Check if this is a function
+        if let Some(Token::LParen) = self.peek() {
+            self.advance(); // Consume '('
+
+            // Parse parameter list
+            let parameters = self.parse_parameter_list()?;
+            self.expect_token(Token::RParen)?;
+
+            // Check if this is a declaration or definition
+            if let Some(Token::LBrace) = self.peek() {
+                // Function definition
+                let body = self.parse_compound_statement()?;
+
+                return Ok(AstNode::FunctionDefinition {
+                    decl_specifiers: vec![Box::new(AstNode::TypeSpecifier(type_spec))],
+                    declarator: Box::new(AstNode::Identifier(identifier)),
+                    parameters,
+                    compound_statement: Box::new(body),
+                });
+            } else {
+                // Function declaration (prototype)
+                self.expect_token(Token::Semicolon)?;
+
+                return Ok(AstNode::FunctionDeclaration {
+                    decl_specifiers: vec![Box::new(AstNode::TypeSpecifier(type_spec))],
+                    declarator: Box::new(AstNode::Identifier(identifier)),
+                    parameters,
+                });
+            }
         }
 
-        // Otherwise, try to parse a declaration
-        self.parse_declaration()
+        // This is a variable declaration
+        let declarator = Box::new(AstNode::Identifier(identifier));
+
+        // Check for initializer
+        let initializer = match self.peek() {
+            Some(token) if *token == Token::Assign => {
+                self.expect_token(Token::Assign)?;
+                Some(Box::new(self.parse_expression()?))
+            },
+            _ => None
+        };
+
+        // Expect semicolon
+        self.expect_token(Token::Semicolon)?;
+
+        Ok(AstNode::Declaration {
+            type_spec,
+            declarator,
+            initializer,
+        })
     }
 
     /// Parse a function definition
@@ -71,15 +124,22 @@ impl Parser {
         let mut decl_spec = Vec::new();
         decl_spec.push(Box::new(AstNode::TypeSpecifier(type_spec)));
 
-        // Parse declarator
-        let declarator = self.parse_declarator()?;
+        // Parse function name
+        let function_name = self.parse_identifier()?;
+        let declarator = Box::new(AstNode::Identifier(function_name));
+
+        // Parse parameter list
+        self.expect_token(Token::LParen)?; // Expect '('
+        let parameters = self.parse_parameter_list()?;
+        self.expect_token(Token::RParen)?; // Expect ')'
 
         // Parse compound statement (function body)
         let body = self.parse_compound_statement()?;
 
         Ok(AstNode::FunctionDefinition {
             decl_specifiers: decl_spec,
-            declarator: Box::new(declarator),
+            declarator,
+            parameters,
             compound_statement: Box::new(body),
         })
     }
@@ -109,19 +169,50 @@ impl Parser {
             if let Some(Token::LParen) = self.peek() {
                 self.advance(); // Consume '('
 
-                // Parse parameter list (for simplicity, just expect ')')
-                if let Some(Token::RParen) = self.peek() {
-                    self.advance(); // Consume ')'
-                    return Ok(id_node);
-                } else {
-                    return Err(CompileError::ParserError("Expected ')' after parameter list".to_string()));
-                }
+                // Parse parameter list - call our new function here
+                let params = self.parse_parameter_list()?;
+
+                // Expect closing parenthesis
+                self.expect_token(Token::RParen)?;
+
+                // Create a function declarator node
+                return Ok(AstNode::FunctionCall {
+                    function: Box::new(id_node),
+                    args: params,
+                });
             }
 
             return Ok(id_node);
         }
 
         Err(CompileError::ParserError("Expected identifier in declarator".to_string()))
+    }
+
+    pub fn parse_declaration(&mut self) -> ParseResult {
+        // Parse the type specifier
+        let type_specifier = self.parse_type_specifier()?;
+
+        // Parse the variable identifier
+        let identifier = self.parse_identifier()?;
+        let declarator = Box::new(AstNode::Identifier(identifier));
+
+        // Check for initializer
+        let initializer = match self.peek() {
+            Some(token) if *token == Token::Assign => {
+                self.expect_token(Token::Assign)?;
+                Some(Box::new(self.parse_expression()?))
+            },
+            _ => None
+        };
+
+        // Expect semicolon
+        self.expect_token(Token::Semicolon)?;
+
+        Ok(AstNode::Declaration {
+            type_spec: type_specifier,
+            declarator,
+            initializer,
+        })
     }
 
     /// Parse a compound statement
@@ -708,36 +799,6 @@ impl Parser {
         }
     }
 
-    /// Parse a declaration
-    pub fn parse_declaration(&mut self) -> Result<AstNode, CompileError> {
-        // Parse the type specifier (int, char, etc.)
-        let type_specifier = self.parse_type_specifier()?;
-
-        // Parse the variable identifier
-        let identifier = self.parse_identifier()?;
-        let declarator = Box::new(AstNode::Identifier(identifier));
-
-        // Check for initializer
-        let initializer = match self.peek() {
-            Some(token) if *token == Token::Assign => {
-                self.expect_token(Token::Assign)?; // Consume the '=' token
-                // Parse the initializer expression
-                Some(Box::new(self.parse_expression()?))
-            },
-            _ => None
-        };
-
-        // Expect semicolon at the end
-        self.expect_token(Token::Semicolon)?;
-
-        // Return Declaration node
-        Ok(AstNode::Declaration {
-            type_spec: type_specifier,
-            declarator,
-            initializer,
-        })
-    }
-
     /// Parse an if statement
     fn parse_if_statement(&mut self) -> ParseResult {
         self.advance(); // Consume 'if'
@@ -822,7 +883,45 @@ impl Parser {
                 self.advance();
                 Ok(TypeSpecifier::Void)
             },
-            _ => Err(CompileError::ParserError("Expected type specifier".to_string()))
+            _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token)))
         }
+    }
+
+    /// Parse a function parameter
+    fn parse_parameter_declaration(&mut self) -> Result<AstNode, CompileError> {
+        // Parse the type specifier (int, char, etc.)
+        let type_specifier = self.parse_type_specifier()?;
+
+        // Parse the parameter identifier
+        let identifier = self.parse_identifier()?;
+        let declarator = Box::new(AstNode::Identifier(identifier));
+
+        // Return Declaration node without requiring a semicolon
+        Ok(AstNode::Declaration {
+            type_spec: type_specifier,
+            declarator,
+            initializer: None, // Parameters don't have initializers in standard C
+        })
+    }
+
+    /// Parse a parameter list
+    fn parse_parameter_list(&mut self) -> Result<Vec<Box<AstNode>>, CompileError> {
+        let mut params = Vec::new();
+
+        // Empty parameter list
+        if let Some(Token::RParen) = self.peek() {
+            return Ok(params);
+        }
+
+        // Parse first parameter
+        params.push(Box::new(self.parse_parameter_declaration()?));
+
+        // Parse additional parameters separated by commas
+        while let Some(Token::Comma) = self.peek() {
+            self.advance(); // Consume the comma
+            params.push(Box::new(self.parse_parameter_declaration()?));
+        }
+
+        Ok(params)
     }
 }

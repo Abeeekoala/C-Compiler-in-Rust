@@ -37,10 +37,9 @@ fn main() -> Result<(), CompileError> {
     // Parse source to AST
     let ast = parse_source(&source)?;
 
-    if debug_mode {
-        eprintln!("--- Debug: AST ---");
-        eprintln!("{}", print_ast(&ast));
-    }
+    // Always print AST for debugging during development
+    eprintln!("--- AST for {} ---", input_file);
+    eprintln!("{}", print_ast(&ast));
 
     // Generate assembly code
     let (assembly, context) = generate_code(&ast)?;

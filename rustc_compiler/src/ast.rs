@@ -20,7 +20,14 @@ pub enum AstNode {
     FunctionDefinition {
         decl_specifiers: Vec<Box<AstNode>>,
         declarator: Box<AstNode>,
+        parameters: Vec<Box<AstNode>>,
         compound_statement: Box<AstNode>,
+    },
+    /// A function declaration (e.g. int main(void)).
+    FunctionDeclaration {
+        decl_specifiers: Vec<Box<AstNode>>,
+        declarator: Box<AstNode>,
+        parameters: Vec<Box<AstNode>>,
     },
     /// An identifier.
     Identifier(String),
