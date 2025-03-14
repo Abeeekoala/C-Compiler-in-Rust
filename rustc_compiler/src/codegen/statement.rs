@@ -9,6 +9,8 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
         AstNode::ReturnStatement(_) => generate_return_statement(node, context),
         AstNode::WhileStatement { .. } => generate_while_statement(node, context),
         AstNode::IfStatement { .. } => generate_if_statement(node, context),
+        AstNode::Assignment { lhs, rhs } => generate_assignment(lhs, rhs, context),
+        AstNode::ForLoop { init, condition, increment, body } => {generate_for_loop(init, condition, increment, body, context)},
         AstNode::BlockStatement(stmts) => {
             for stmt in stmts {
                 generate_statement(stmt, context)?;
@@ -33,6 +35,23 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
         },
         _ => Err(CompileError::CodegenError(format!("Unsupported statement type: {:?}", node))),
     }
+}
+
+fn generate_assignment(
+    lhs: &AstNode,
+    rhs: &AstNode,
+    context: &mut CodeGenContext,
+) -> Result<(), CompileError> {
+    let rhs_reg = generate_expression(rhs, context)?;
+
+    if let AstNode::Identifier(var_name) = &*lhs {
+        if let Some((offset, _)) = context.get_variable(var_name.as_str()) {
+            context.emit(&format!("sw {}, {}(s0)", rhs_reg, offset));
+            context.free_register(&rhs_reg);
+            return Ok(());
+        }
+    }
+    Err(CompileError::CodegenError("Invalid assignment target".to_string()))
 }
 
 /// Generate code for a while loop
@@ -65,6 +84,48 @@ fn generate_while_statement(node: &AstNode, context: &mut CodeGenContext) -> Res
         Err(CompileError::CodegenError("Expected while statement".to_string()))
     }
 }
+
+/// Generate code for a for statement
+fn generate_for_loop(
+    init: &Box<AstNode>,
+    condition: &Box<AstNode>,
+    increment: &Box<AstNode>,
+    body: &Box<AstNode>,
+    context: &mut CodeGenContext,
+) -> Result<(), CompileError> {
+    // Generate initialization code
+    generate_statement(init, context)?;
+
+    let loop_start = context.generate_label("loop_start");
+    let loop_cond = context.generate_label("loop_cond");
+    let loop_end = context.generate_label("loop_end");
+
+    // Jump to condition check first
+    context.emit(&format!("j {}", loop_cond));
+
+    // Loop body label
+    context.emit(&format!("{}:", loop_start));
+
+    // Generate loop body
+    generate_statement(body, context)?;
+
+    // Generate increment code
+    generate_statement(increment, context)?;
+
+    // Condition check label
+    context.emit(&format!("{}:", loop_cond));
+
+    // Generate condition check
+    let cond_reg = generate_expression(condition, context)?;
+    context.emit(&format!("bnez {}, {}", cond_reg, loop_start));
+    context.free_register(&cond_reg);
+
+    // End label
+    context.emit(&format!("{}:", loop_end));
+
+    Ok(())
+}
+
 
 /// Generate code for an if statement
 fn generate_if_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {

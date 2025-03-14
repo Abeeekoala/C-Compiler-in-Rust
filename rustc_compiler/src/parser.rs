@@ -169,6 +169,9 @@ impl Parser {
             // While statements
             Some(Token::WhileKw) => self.parse_while_statement(),
 
+            // For statements
+            Some(Token::ForKw) => self.parse_for_statement(),
+
             // Expression statements (e.g., function calls, assignments)
             _ => {
                 let expr = self.parse_expression()?;
@@ -181,6 +184,46 @@ impl Parser {
                 }
             }
         }
+    }
+
+    fn parse_for_statement(&mut self) -> ParseResult {
+        self.advance(); // Consume 'for'
+        self.expect_token(Token::LParen)?;
+
+        // Parse initialization (can be empty)
+        let init = if self.check_token(Token::Semicolon) {
+            AstNode::Empty
+        } else {
+            self.parse_expression_statement()?
+        };
+
+        // Parse condition (can be empty, default to true)
+        let condition = if self.check_token(Token::Semicolon) {
+            AstNode::IntConstant(1) // Default true
+        } else {
+            let expr = self.parse_expression()?;
+            self.expect_token(Token::Semicolon)?;
+            expr
+        };
+
+        // Parse increment (can be empty)
+        let increment = if self.check_token(Token::RParen) {
+            AstNode::Empty
+        } else {
+            let expr = self.parse_expression()?;
+            self.expect_token(Token::RParen)?;
+            expr
+        };
+
+        // Parse body
+        let body = self.parse_statement()?;
+
+        Ok(AstNode::ForLoop {
+            init: Box::new(init),
+            condition: Box::new(condition),
+            increment: Box::new(increment),
+            body: Box::new(body),
+        })
     }
 
     fn parse_while_statement(&mut self) -> Result<AstNode, CompileError> {

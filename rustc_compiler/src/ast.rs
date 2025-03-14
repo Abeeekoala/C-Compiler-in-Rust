@@ -15,6 +15,7 @@ pub struct Context {
 /// The different kinds of AST nodes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstNode {
+    Empty,
     /// A function definition (e.g. int main() { ... }).
     FunctionDefinition {
         decl_specifiers: Vec<Box<AstNode>>,
@@ -97,6 +98,12 @@ pub enum AstNode {
     },
     WhileStatement {
         condition: Box<AstNode>,
+        body: Box<AstNode>,
+    },
+    ForLoop {
+        init: Box<AstNode>,
+        condition: Box<AstNode>,
+        increment: Box<AstNode>,
         body: Box<AstNode>,
     },
     /// Expression statement - expression followed by a semicolon
