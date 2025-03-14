@@ -95,6 +95,10 @@ pub enum AstNode {
         then_stmt: Box<AstNode>,
         else_stmt: Option<Box<AstNode>>,
     },
+    WhileStatement {
+        condition: Box<AstNode>,
+        body: Box<AstNode>,
+    },
     /// Expression statement - expression followed by a semicolon
     ExpressionStatement(Box<AstNode>),
     /// Integer literal with a value

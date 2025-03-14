@@ -7,6 +7,7 @@ use crate::error::CompileError;
 pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
     match node {
         AstNode::ReturnStatement(_) => generate_return_statement(node, context),
+        AstNode::WhileStatement { .. } => generate_while_statement(node, context),
         AstNode::IfStatement { .. } => generate_if_statement(node, context),
         AstNode::BlockStatement(stmts) => {
             for stmt in stmts {
@@ -31,6 +32,37 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
             Ok(())
         },
         _ => Err(CompileError::CodegenError(format!("Unsupported statement type: {:?}", node))),
+    }
+}
+
+/// Generate code for a while loop
+fn generate_while_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
+    if let AstNode::WhileStatement { condition, body } = node {
+        let start_label = context.generate_label("while_start");
+        let end_label = context.generate_label("while_end");
+
+        // Emit start label
+        context.emit(&format!("{}:", start_label));
+
+        // Generate condition expression
+        let cond_reg = generate_expression(condition, context)?;
+
+        // If condition is false, exit loop
+        context.emit(&format!("    beqz {}, {}", cond_reg, end_label));
+        context.free_register(&cond_reg);
+
+        // Generate loop body
+        generate_statement(body, context)?;
+
+        // Jump back to start
+        context.emit(&format!("    j {}", start_label));
+
+        // Emit end label
+        context.emit(&format!("{}:", end_label));
+
+        Ok(())
+    } else {
+        Err(CompileError::CodegenError("Expected while statement".to_string()))
     }
 }
 

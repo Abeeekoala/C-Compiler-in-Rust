@@ -158,24 +158,21 @@ impl Parser {
             },
 
             // Compound statements
-            Some(Token::LBrace) => {
-                self.parse_compound_statement()
-            },
+            Some(Token::LBrace) => self.parse_compound_statement(),
 
             // If statements
-            Some(Token::IfKw) => {
-                self.parse_if_statement()
-            },
+            Some(Token::IfKw) => self.parse_if_statement(),
 
             // Return statements
-            Some(Token::ReturnKw) => {
-                self.parse_return_statement()
-            },
+            Some(Token::ReturnKw) => self.parse_return_statement(),
+
+            // While statements
+            Some(Token::WhileKw) => self.parse_while_statement(),
 
             // Expression statements (e.g., function calls, assignments)
             _ => {
                 let expr = self.parse_expression()?;
-                 // Expect ';'
+                // Expect ';'
                 if let Some(Token::Semicolon) = self.peek() {
                     self.advance();
                     Ok(AstNode::ExpressionStatement(Box::new(expr)))
@@ -184,6 +181,28 @@ impl Parser {
                 }
             }
         }
+    }
+
+    fn parse_while_statement(&mut self) -> Result<AstNode, CompileError> {
+        self.advance(); // Consume the 'while' token
+
+        // Expect '('
+        self.expect_token(Token::LParen)?;
+
+        // Parse the loop condition
+        let condition = self.parse_expression()?;
+
+        // Expect ')'
+        self.expect_token(Token::RParen)?;
+
+        // Parse the loop body (this could be a single statement or a block)
+        let body = self.parse_statement()?;
+
+        // Return a WhileStatement AST node
+        Ok(AstNode::WhileStatement {
+            condition: Box::new(condition),
+            body: Box::new(body),
+        })
     }
 
     /// Parse a return statement
