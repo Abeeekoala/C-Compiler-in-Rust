@@ -38,7 +38,7 @@ pub struct CodeGenContext {
     pub available_temp_registers: Vec<String>,
     /// Add a variable table to track variables
     pub variables: HashMap<String, (i32, String)>, // (offset, type)
-    /// Next temporary register
+    /// Next temporary register counter when we run out of predefined registers
     next_temp_reg: usize,
 }
 
@@ -82,7 +82,11 @@ impl CodeGenContext {
             self.used_temp_registers.push(reg.clone());
             Some(reg)
         } else {
-            None  // No registers available
+            // If we're out of predefined registers, generate a new one
+            let reg = format!("t{}", self.next_temp_reg);
+            self.next_temp_reg += 1;
+            self.used_temp_registers.push(reg.clone());
+            Some(reg)
         }
     }
 
@@ -90,7 +94,15 @@ impl CodeGenContext {
     pub fn free_register(&mut self, reg: &str) {
         if let Some(pos) = self.used_temp_registers.iter().position(|r| r == reg) {
             self.used_temp_registers.remove(pos);
-            self.available_temp_registers.push(reg.to_string());
+
+            // Only put registers back in the available pool if they're from our predefined list
+            // (t0-t6) - Dynamically allocated registers aren't reused
+            if reg.starts_with('t') && reg.len() == 2 && reg.chars().nth(1).unwrap().is_digit(10) {
+                let digit = reg.chars().nth(1).unwrap().to_digit(10).unwrap();
+                if digit <= 6 {  // Only t0-t6 are predefined
+                    self.available_temp_registers.push(reg.to_string());
+                }
+            }
         }
     }
 
@@ -154,26 +166,32 @@ impl CodeGenContext {
         offset
     }
 
-    /// Get a free register for temporary values
+    /// Get a register for temporary use
     pub fn get_register(&mut self) -> String {
-        // Check if we have any free registers
-        if !self.used_temp_registers.is_empty() {
-            return self.used_temp_registers.pop().unwrap();
-        }
-
-        // Create a new temporary register name if we're out of registers
-        // Using t0, t1, etc. for temporary registers
-        let reg_num = self.next_temp_reg;
-        self.next_temp_reg += 1;
-        format!("t{}", reg_num)
+        // Always allocate a new register, don't reuse existing ones
+        self.allocate_register().unwrap_or_else(|| {
+            // This is a fallback in case allocate_register fails (which shouldn't happen)
+            let reg = format!("t{}", self.next_temp_reg);
+            self.next_temp_reg += 1;
+            self.used_temp_registers.push(reg.clone());
+            reg
+        })
     }
 
+    /// Get all currently used registers that need to be saved
     pub fn get_used_registers(&self) -> Vec<String> {
         self.used_temp_registers.clone()
     }
 
+    /// Reset temporary registers after a function completes
     pub fn reset_temp_registers(&mut self) {
         self.used_temp_registers.clear();
         self.next_temp_reg = 0;
+
+        // Restore original available registers
+        self.available_temp_registers = vec![
+            "t6".to_string(), "t5".to_string(), "t4".to_string(),
+            "t3".to_string(), "t2".to_string(), "t1".to_string(), "t0".to_string()
+        ];
     }
 }

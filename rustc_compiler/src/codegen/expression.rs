@@ -264,35 +264,46 @@ fn generate_assignment(left: &AstNode, right: &AstNode, context: &mut CodeGenCon
 // Add implementations for unary operations, function calls, etc.
 
 fn generate_function_call(
-        function: &AstNode,
-        args: &[Box<AstNode>],
-        context: &mut CodeGenContext
-    ) -> Result<String, CompileError> {
+    function: &AstNode,
+    args: &[Box<AstNode>],
+    context: &mut CodeGenContext
+) -> Result<String, CompileError> {
     // Get function name
     let func_name = match function {
         AstNode::Identifier(name) => name,
         _ => return Err(CompileError::CodegenError("Expected function name".to_string())),
     };
 
-    // Save all used registers before the call (caller-saved registers)
+    // Save all used registers to stack before the call
     let used_regs = context.get_used_registers();
-    for reg in &used_regs {
-        // Push register onto the stack:
-        context.emit("    addi sp, sp, -4");
-        context.emit(&format!("    sw {}, 0(sp)", reg));
+    let needs_saving = !used_regs.is_empty();
+
+    if needs_saving {
+        // Allocate stack space for saving registers
+        let stack_adjustment = used_regs.len() * 4; // 4 bytes per register
+        context.emit(&format!("    addi sp, sp, -{}", stack_adjustment));
+
+        // Save registers to stack
+        for (i, reg) in used_regs.iter().enumerate() {
+            let offset = i * 4;
+            context.emit(&format!("    sw {}, {}(sp)", reg, offset));
+        }
     }
 
-    // Generate code for arguments (in reverse order for stack-based calling)
-    let mut arg_regs = Vec::new();
+    // Process arguments
     for (i, arg) in args.iter().enumerate().take(8) {
-        let arg_reg = generate_expression(arg, context)?;
-
-        // Move to the appropriate argument register (a0-a7)
-        if arg_reg != format!("a{}", i) {
-            context.emit(&format!("    mv a{}, {}", i, arg_reg));
+        // Check if this is a simple constant that can be loaded directly
+        if let AstNode::IntConstant(value) = &**arg {
+            // Load immediate directly into argument register
+            context.emit(&format!("    li a{}, {}", i, value));
+        } else {
+            // For complex expressions, evaluate and move to argument register
+            let arg_reg = generate_expression(arg, context)?;
+            if arg_reg != format!("a{}", i) {
+                context.emit(&format!("    mv a{}, {}", i, arg_reg));
+                context.free_register(&arg_reg);
+            }
         }
-
-        arg_regs.push(arg_reg);
     }
 
     // Call the function
@@ -301,21 +312,23 @@ fn generate_function_call(
     // Get a register for the result
     let result_reg = context.get_register();
 
-    // Move return value (in a0) to our result register
+    // Move return value (in a0) to our result register if needed
     if result_reg != "a0" {
         context.emit(&format!("    mv {}, a0", result_reg));
     }
 
-    // Free all argument registers
-    for reg in arg_regs {
-        if reg != result_reg {
-            context.free_register(&reg);
+    // Restore saved registers from stack
+    if needs_saving {
+        for (i, reg) in used_regs.iter().enumerate() {
+            if reg != &result_reg {  // Don't restore if it's our result register
+                let offset = i * 4;
+                context.emit(&format!("    lw {}, {}(sp)", reg, offset));
+            }
         }
-    }
 
-    for reg in used_regs.iter().rev() {
-        context.emit(&format!("    lw {}, 0(sp)", reg));
-        context.emit("    addi sp, sp, 4");
+        // Deallocate stack space
+        let stack_adjustment = used_regs.len() * 4;
+        context.emit(&format!("    addi sp, sp, {}", stack_adjustment));
     }
 
     Ok(result_reg)
