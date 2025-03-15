@@ -18,6 +18,7 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
             Ok(())
         },
         AstNode::ExpressionStatement(_) => generate_expression_statement(node, context),
+        AstNode::UnaryOperation { op, operand } => generate_unary_operation(op, operand, context),
         AstNode::Declaration { type_spec, declarator, initializer } => {
             // Generate code for a single declaration
             if let AstNode::Identifier(name) = &**declarator {
@@ -220,5 +221,44 @@ fn generate_declaration_item(node: &AstNode, context: &mut CodeGenContext) -> Re
         }
     } else {
         Err(CompileError::CodegenError("Expected variable declaration".to_string()))
+    }
+}
+
+/// Generate code for a unary operation statement
+fn generate_unary_operation(
+    op: &str,
+    operand: &AstNode,
+    context: &mut CodeGenContext,
+) -> Result<(), CompileError> {
+    // Handle post-increment/decrement and pre-increment/decrement
+    match op {
+        "post++" | "post--" | "++" | "--" => {
+            if let AstNode::Identifier(var_name) = operand {
+                if let Some((offset, _)) = context.get_variable(var_name.as_str()) {
+                    // Get a register for computation
+                    let reg = context.get_register();
+
+                    // Load the current value
+                    context.emit(&format!("    lw {}, {}(s0)", reg, offset));
+
+                    // Increment or decrement
+                    match op {
+                        "post++" | "++" => context.emit(&format!("    addi {}, {}, 1", reg, reg)),
+                        "post--" | "--" => context.emit(&format!("    addi {}, {}, -1", reg, reg)),
+                        _ => unreachable!(),
+                    }
+
+                    // Store the updated value back
+                    context.emit(&format!("    sw {}, {}(s0)", reg, offset));
+
+                    // Free the register
+                    context.free_register(&reg);
+
+                    return Ok(());
+                }
+            }
+            Err(CompileError::CodegenError(format!("Invalid operand for {} operation", op)))
+        },
+        _ => Err(CompileError::CodegenError(format!("Unsupported unary operation: {}", op))),
     }
 }
