@@ -2,6 +2,8 @@ use crate::ast::AstNode;
 use crate::codegen::context::CodeGenContext;
 use crate::codegen::expression::generate_expression;
 use crate::error::CompileError;
+use crate::ast::SwitchCase;
+
 
 /// Generate code for a statement
 pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
@@ -15,6 +17,15 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
             for stmt in stmts {
                 generate_statement(stmt, context)?;
             }
+            Ok(())
+        },
+        AstNode::SwitchStatement { expr, cases, default } => {
+            generate_switch_statement(expr, cases, default, context)
+        },
+        AstNode::BreakStatement => {
+            let label = context.get_current_break_label()
+                .ok_or(CompileError::CodegenError("break outside loop/switch".into()))?;
+            context.emit(&format!("j {}", label));
             Ok(())
         },
         AstNode::ExpressionStatement(_) => generate_expression_statement(node, context),
@@ -261,4 +272,64 @@ fn generate_unary_operation(
         },
         _ => Err(CompileError::CodegenError(format!("Unsupported unary operation: {}", op))),
     }
+}
+
+fn generate_switch_statement(
+    expr: &AstNode,
+    cases: &[SwitchCase],
+    default: &Option<Vec<Box<AstNode>>>,
+    context: &mut CodeGenContext,
+) -> Result<(), CompileError> {
+    let end_label = context.generate_label("switch_end");
+    let default_label = context.generate_label("switch_default");
+
+    // Evaluate switch expression
+    let expr_reg = generate_expression(expr, context)?;
+
+    // Generate case comparisons
+    let mut case_labels = Vec::new();
+    for case in cases {
+        let label = context.generate_label("case");
+        case_labels.push(label.clone());
+
+        // Compare with case value
+        let case_value_reg = generate_expression(&case.value, context)?;
+        context.emit(&format!("beq {0}, {1}, {2}", expr_reg, case_value_reg, label));
+        context.free_register(&case_value_reg);
+    }
+
+    // Handle default case
+    if default.is_some() {
+        context.emit(&format!("j {}", default_label));
+    } else {
+        context.emit(&format!("j {}", end_label));
+    }
+
+    // Generate case bodies
+    for (i, case) in cases.iter().enumerate() {
+        context.emit(&format!("{}:", case_labels[i]));
+        context.push_break_label(end_label.clone());
+
+        for stmt in &case.body {
+            generate_statement(stmt, context)?;
+        }
+
+        context.pop_break_label();
+    }
+
+    // Generate default body
+    if let Some(default_body) = default {
+        context.emit(&format!("{}:", default_label));
+        context.push_break_label(end_label.clone());
+
+        for stmt in default_body {
+            generate_statement(stmt, context)?;
+        }
+
+        context.pop_break_label();
+    }
+
+    context.emit(&format!("{}:", end_label));
+    context.free_register(&expr_reg);
+    Ok(())
 }

@@ -1,5 +1,6 @@
 // src/parser.rs
 
+use crate::ast::SwitchCase;
 use crate::lexer::Token;
 use crate::ast::{AstNode, TypeSpecifier, Context};
 use std::iter::Peekable;
@@ -263,6 +264,14 @@ impl Parser {
             // For statements
             Some(Token::ForKw) => self.parse_for_statement(),
 
+            // Switch statements
+            Some(Token::SwitchKw) => self.parse_switch_statement(),
+            Some(Token::BreakKw) => {
+                self.advance();
+                self.expect_token(Token::Semicolon)?;
+                Ok(AstNode::BreakStatement)
+            },
+
             // Expression statements (e.g., function calls, assignments)
             _ => {
                 let expr = self.parse_expression()?;
@@ -274,6 +283,75 @@ impl Parser {
                     Err(CompileError::ParserError("Expected ';' after statement".to_string()))
                 }
             }
+        }
+    }
+
+    fn parse_switch_statement(&mut self) -> ParseResult {
+        self.advance(); // Consume 'switch'
+        self.expect_token(Token::LParen)?;
+        let expr = self.parse_expression()?;
+        self.expect_token(Token::RParen)?;
+        self.expect_token(Token::LBrace)?;
+
+        let mut cases = Vec::new();
+        let mut default = None;
+
+        while !self.check_token(Token::RBrace) {
+            match self.peek() {
+                Some(Token::CaseKw) => {
+                    self.advance(); // Consume 'case'
+                    let value = self.parse_constant_expression()?;
+                    self.expect_token(Token::Colon)?;
+                    let mut body = Vec::new();
+                    while !matches!(self.peek(), Some(Token::CaseKw | Token::DefaultKw | Token::RBrace)) {
+                        body.push(Box::new(self.parse_statement()?));
+                    }
+                    cases.push(SwitchCase { value: Box::new(value), body });
+                }
+                Some(Token::DefaultKw) => {
+                    self.advance(); // Consume 'default'
+                    self.expect_token(Token::Colon)?;
+                    let mut body = Vec::new();
+                    while !matches!(self.peek(), Some(Token::CaseKw | Token::DefaultKw | Token::RBrace)) {
+                        body.push(Box::new(self.parse_statement()?));
+                    }
+                    default = Some(body);
+                }
+                _ => return Err(CompileError::ParserError("Unexpected token in switch statement".into())),
+            }
+        }
+
+        self.expect_token(Token::RBrace)?;
+
+        Ok(AstNode::SwitchStatement {
+            expr: Box::new(expr),
+            cases,
+            default,
+        })
+    }
+
+    fn parse_constant_expression(&mut self) -> ParseResult {
+        let start_pos = self.current;
+        let expr = self.parse_conditional_expression()?;
+
+        if !Self::is_constant_expression(&expr) {
+            self.current = start_pos;  // Rewind
+            return Err(CompileError::ParserError(
+                "Non-constant expression in case label".into()
+            ));
+        }
+
+        Ok(expr)
+    }
+
+    fn is_constant_expression(node: &AstNode) -> bool {
+        match node {
+            AstNode::IntConstant(_) | AstNode::CharConstant(_) => true,
+            AstNode::UnaryOperation { op: _, operand } =>
+                Self::is_constant_expression(operand),
+            AstNode::BinaryOperation { op: _, left, right } =>
+                Self::is_constant_expression(left) && Self::is_constant_expression(right),
+            _ => false
         }
     }
 

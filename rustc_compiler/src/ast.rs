@@ -16,6 +16,12 @@ pub struct Context {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstNode {
     Empty,
+    SwitchStatement {
+        expr: Box<AstNode>,
+        cases: Vec<SwitchCase>,
+        default: Option<Vec<Box<AstNode>>>,
+    },
+    BreakStatement,
     /// A function definition (e.g. int main() { ... }).
     FunctionDefinition {
         decl_specifiers: Vec<Box<AstNode>>,
@@ -166,6 +172,12 @@ pub enum TypeSpecifier {
     Float,
     Double,
     // Add any other type specifiers you need
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchCase {
+    pub value: Box<AstNode>,
+    pub body: Vec<Box<AstNode>>,
 }
 
 impl Node for AstNode {

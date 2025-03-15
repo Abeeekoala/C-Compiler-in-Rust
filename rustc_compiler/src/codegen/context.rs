@@ -40,6 +40,8 @@ pub struct CodeGenContext {
     pub variables: HashMap<String, (i32, String)>, // (offset, type)
     /// Next temporary register counter when we run out of predefined registers
     next_temp_reg: usize,
+
+    break_labels: Vec<String>,
 }
 
 impl CodeGenContext {
@@ -60,6 +62,7 @@ impl CodeGenContext {
             available_temp_registers: temp_regs.iter().map(|&s| s.to_string()).collect(),
             variables: HashMap::new(),
             next_temp_reg: 0,
+            break_labels: Vec::new(),
         }
     }
 
@@ -67,6 +70,18 @@ impl CodeGenContext {
     pub fn emit(&mut self, line: &str) {
         self.output.push_str(line);
         self.output.push('\n');
+    }
+
+    pub fn push_break_label(&mut self, label: String) {
+        self.break_labels.push(label);
+    }
+
+    pub fn pop_break_label(&mut self) -> Option<String> {
+        self.break_labels.pop()
+    }
+
+    pub fn get_current_break_label(&self) -> Option<&String> {
+        self.break_labels.last()
     }
 
     /// Generate a unique label
