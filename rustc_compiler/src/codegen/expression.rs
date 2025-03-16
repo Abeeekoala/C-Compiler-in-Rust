@@ -30,6 +30,7 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
         }
         AstNode::IntegerLiteral(value) => generate_int_constant(*value, context),
         AstNode::BinaryOperation { op, left, right } => generate_binary_operation(op, left, right, context),
+        AstNode::UnaryOperation { op, operand } => generate_unary_operation(op, operand, context),
         AstNode::Assignment { lhs, rhs } => generate_assignment(lhs, rhs, context),
         AstNode::IntConstant(value) => {
             let reg = context.get_register();
@@ -170,6 +171,178 @@ fn generate_binary_operation(
     context.free_register(&right_reg);
 
     Ok(result_reg)
+}
+
+/// Generate code for unary operations
+fn generate_unary_operation(
+    op: &str,
+    operand: &AstNode,
+    context: &mut CodeGenContext
+) -> Result<String, CompileError> {
+    match op {
+        // Unary plus: doesn't change the value
+        "+" => {
+            // Just evaluate the operand
+            generate_expression(operand, context)
+        },
+
+        // Unary minus: negate the value
+        "-" => {
+            let operand_reg = generate_expression(operand, context)?;
+            context.emit(&format!("    neg {0}, {0}", operand_reg));
+            Ok(operand_reg)
+        },
+
+        // Bitwise NOT
+        "~" => {
+            let operand_reg = generate_expression(operand, context)?;
+            context.emit(&format!("    not {0}, {0}", operand_reg));
+            Ok(operand_reg)
+        },
+
+        // Logical NOT
+        "!" => {
+            let operand_reg = generate_expression(operand, context)?;
+            // Set to 1 if operand is 0, otherwise set to 0
+            context.emit(&format!("    seqz {0}, {0}", operand_reg));
+            Ok(operand_reg)
+        },
+
+        // Pre-increment: increment operand, then return new value
+        "++" => {
+            if let AstNode::Identifier(var_name) = operand {
+                if let Some((offset, _)) = context.get_variable(var_name) {
+                    let result_reg = context.get_register();
+
+                    // Load current value
+                    context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+
+                    // Increment
+                    context.emit(&format!("    addi {}, {}, 1", result_reg, result_reg));
+
+                    // Store back
+                    context.emit(&format!("    sw {}, {}(s0)", result_reg, offset));
+
+                    // Result is the new value (already in result_reg)
+                    return Ok(result_reg);
+                }
+            }
+            Err(CompileError::CodegenError("Invalid operand for ++ operation".to_string()))
+        },
+
+        // Pre-decrement: decrement operand, then return new value
+        "--" => {
+            if let AstNode::Identifier(var_name) = operand {
+                if let Some((offset, _)) = context.get_variable(var_name) {
+                    let result_reg = context.get_register();
+
+                    // Load current value
+                    context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+
+                    // Decrement
+                    context.emit(&format!("    addi {}, {}, -1", result_reg, result_reg));
+
+                    // Store back
+                    context.emit(&format!("    sw {}, {}(s0)", result_reg, offset));
+
+                    // Result is the new value (already in result_reg)
+                    return Ok(result_reg);
+                }
+            }
+            Err(CompileError::CodegenError("Invalid operand for -- operation".to_string()))
+        },
+
+        // Post-increment: return original value, then increment
+        "post++" => {
+            if let AstNode::Identifier(var_name) = operand {
+                if let Some((offset, _)) = context.get_variable(var_name) {
+                    let result_reg = context.get_register();
+                    let temp_reg = context.get_register();
+
+                    // Load current value
+                    context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+
+                    // Copy to temp register
+                    context.emit(&format!("    mv {}, {}", temp_reg, result_reg));
+
+                    // Increment temp
+                    context.emit(&format!("    addi {}, {}, 1", temp_reg, temp_reg));
+
+                    // Store back the incremented value
+                    context.emit(&format!("    sw {}, {}(s0)", temp_reg, offset));
+
+                    // Free temp register
+                    context.free_register(&temp_reg);
+
+                    // Result is the original value (in result_reg)
+                    return Ok(result_reg);
+                }
+            }
+            Err(CompileError::CodegenError("Invalid operand for post++ operation".to_string()))
+        },
+
+        // Post-decrement: return original value, then decrement
+        "post--" => {
+            if let AstNode::Identifier(var_name) = operand {
+                if let Some((offset, _)) = context.get_variable(var_name) {
+                    let result_reg = context.get_register();
+                    let temp_reg = context.get_register();
+
+                    // Load current value
+                    context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+
+                    // Copy to temp register
+                    context.emit(&format!("    mv {}, {}", temp_reg, result_reg));
+
+                    // Decrement temp
+                    context.emit(&format!("    addi {}, {}, -1", temp_reg, temp_reg));
+
+                    // Store back the decremented value
+                    context.emit(&format!("    sw {}, {}(s0)", temp_reg, offset));
+
+                    // Free temp register
+                    context.free_register(&temp_reg);
+
+                    // Result is the original value (in result_reg)
+                    return Ok(result_reg);
+                }
+            }
+            Err(CompileError::CodegenError("Invalid operand for post-- operation".to_string()))
+        },
+
+        // Pointer dereference
+        "*" => {
+            let addr_reg = generate_expression(operand, context)?;
+            let result_reg = context.get_register();
+
+            // Load from address in addr_reg
+            context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
+
+            // Free the address register if different from result
+            if addr_reg != result_reg {
+                context.free_register(&addr_reg);
+            }
+
+            Ok(result_reg)
+        },
+
+        // Address-of operator
+        "&" => {
+            if let AstNode::Identifier(var_name) = operand {
+                if let Some((offset, _)) = context.get_variable(var_name) {
+                    let result_reg = context.get_register();
+
+                    // Calculate address: frame pointer + offset
+                    context.emit(&format!("    addi {}, s0, {}", result_reg, offset));
+
+                    return Ok(result_reg);
+                }
+            }
+            Err(CompileError::CodegenError("Invalid operand for & operation".to_string()))
+        },
+
+        _ => Err(CompileError::CodegenError(format!("Unsupported unary operation: {}", op))),
+    }
 }
 
 /// Generate code for logical operators with short-circuit evaluation
