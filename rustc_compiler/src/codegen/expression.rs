@@ -20,18 +20,35 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
         },
         AstNode::Assignment { lhs, rhs } => {
             let rhs_reg = generate_expression(rhs, context)?;
-            if let AstNode::Identifier(name) = &**lhs {
-                if let Some((offset, _)) = context.get_variable(name) {
-                    context.emit(&format!("sw {}, {}(s0)", rhs_reg, offset));
-                    return Ok(rhs_reg);
-                }
+
+            match &**lhs {
+                // Regular variable assignment
+                AstNode::Identifier(name) => {
+                    if let Some((offset, _)) = context.get_variable(name) {
+                        context.emit(&format!("    sw {}, {}(s0)", rhs_reg, offset));
+                        return Ok(rhs_reg);
+                    }
+                },
+
+                // Array element assignment: array[index] = value
+                // Array element assignment: array[index] = value
+                AstNode::ArraySubscript { array, index } => {
+                    if let AstNode::Identifier(array_name) = &**array {
+                        let addr_reg = calculate_array_element_address(array_name, index, context)?;
+                        context.emit(&format!("    sw {}, 0({})", rhs_reg, addr_reg));
+                        context.free_register(&addr_reg);
+                        return Ok(rhs_reg);
+                    }
+                },
+                _ => {},
             }
-            Err(CompileError::CodegenError("Invalid assignment".to_string()))
-        }
+
+            // This error will be reached if none of the return statements above were executed
+            Err(CompileError::CodegenError("Invalid assignment target".to_string()))
+        },
         AstNode::IntegerLiteral(value) => generate_int_constant(*value, context),
         AstNode::BinaryOperation { op, left, right } => generate_binary_operation(op, left, right, context),
         AstNode::UnaryOperation { op, operand } => generate_unary_operation(op, operand, context),
-        AstNode::Assignment { lhs, rhs } => generate_assignment(lhs, rhs, context),
         AstNode::IntConstant(value) => {
             let reg = context.get_register();
             context.emit(&format!("    li {}, {}", reg, value));
@@ -40,6 +57,17 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
         AstNode::FunctionCall { function, args } => {
             // Generate code for function call
             generate_function_call(function, args, context)
+        },
+        // Array subscript: array[index]
+        AstNode::ArraySubscript { array, index } => {
+            if let AstNode::Identifier(array_name) = &**array {
+                let addr_reg = calculate_array_element_address(array_name, index, context)?;
+                let result_reg = context.get_register();
+                context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
+                context.free_register(&addr_reg);
+                return Ok(result_reg);
+            }
+            Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node)))
         },
         // Handle other expression types
         _ => Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node))),
@@ -434,8 +462,6 @@ fn generate_assignment(left: &AstNode, right: &AstNode, context: &mut CodeGenCon
     Ok(right_reg)
 }
 
-// Add implementations for unary operations, function calls, etc.
-
 fn generate_function_call(
     function: &AstNode,
     args: &[Box<AstNode>],
@@ -505,4 +531,34 @@ fn generate_function_call(
     }
 
     Ok(result_reg)
+}
+
+fn calculate_array_element_address(
+    array_name: &str,
+    index: &AstNode,
+    context: &mut CodeGenContext,
+) -> Result<String, CompileError> {
+    if let Some((base_offset, _)) = context.get_variable(array_name) {
+        // Generate code for the index expression
+        let index_reg = generate_expression(index, context)?;
+
+        // Get a register for the address calculation
+        let addr_reg = context.get_register();
+
+        // Multiply index by 4 (size of int)
+        context.emit(&format!("    slli {0}, {1}, 2", addr_reg, index_reg));
+
+        // Add the base offset
+        context.emit(&format!("    addi {0}, {0}, {1}", addr_reg, base_offset));
+
+        // Add the frame pointer to get the final address
+        context.emit(&format!("    add {0}, {0}, s0", addr_reg));
+
+        // Free the index register
+        context.free_register(&index_reg);
+
+        Ok(addr_reg)
+    } else {
+        Err(CompileError::CodegenError(format!("Array '{}' not found", array_name)))
+    }
 }

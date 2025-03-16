@@ -47,7 +47,6 @@ pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result
                         };
 
                         context.add_symbol(param_name, symbol);
-                        context.variables.insert(param_name.clone(), (stack_offset, type_str));
                     }
                 }
             }

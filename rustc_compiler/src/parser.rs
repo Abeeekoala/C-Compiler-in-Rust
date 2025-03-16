@@ -94,28 +94,34 @@ impl Parser {
                     parameters,
                 });
             }
-        }
+        } else {
+            // Check for array declarator
+            let mut declarator = AstNode::Identifier(identifier);
+            while let Some(Token::LBracket) = self.peek() {
+                self.advance(); // Consume '['
+                let size = self.parse_expression()?; // Parse the size expression
+                self.expect_token(Token::RBracket)?; // Expect ']'
+                declarator = AstNode::ArrayDeclarator {
+                    base: Box::new(declarator),
+                    size: Box::new(size),
+                };
+            }
 
-        // This is a variable declaration
-        let declarator = Box::new(AstNode::Identifier(identifier));
-
-        // Check for initializer
-        let initializer = match self.peek() {
-            Some(token) if *token == Token::Assign => {
-                self.expect_token(Token::Assign)?;
+            // Check for initializer
+            let initializer = if let Some(Token::Assign) = self.peek() {
+                self.advance(); // Consume '='
                 Some(Box::new(self.parse_expression()?))
-            },
-            _ => None
-        };
+            } else {
+                None
+            };
 
-        // Expect semicolon
-        self.expect_token(Token::Semicolon)?;
-
-        Ok(AstNode::Declaration {
-            type_spec,
-            declarator,
-            initializer,
-        })
+            self.expect_token(Token::Semicolon)?;
+            Ok(AstNode::Declaration {
+                type_spec,
+                declarator: Box::new(declarator),
+                initializer,
+            })
+        }
     }
 
     /// Parse a function definition
@@ -195,7 +201,17 @@ impl Parser {
 
         // Parse the variable identifier
         let identifier = self.parse_identifier()?;
-        let declarator = Box::new(AstNode::Identifier(identifier));
+        let mut declarator = AstNode::Identifier(identifier);
+
+        while let Some(Token::LBracket) = self.peek() {
+            self.advance();
+            let size = self.parse_expression()?;
+            self.expect_token(Token::RBracket)?;
+            declarator = AstNode::ArrayDeclarator {
+                base: Box::new(declarator),
+                size: Box::new(size),
+            };
+        }
 
         // Check for initializer
         let initializer = match self.peek() {
@@ -211,7 +227,7 @@ impl Parser {
 
         Ok(AstNode::Declaration {
             type_spec: type_specifier,
-            declarator,
+            declarator: Box::new(declarator),
             initializer,
         })
     }

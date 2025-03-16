@@ -1,5 +1,7 @@
 // src/ast.rs
 
+use std::fmt;
+
 /// A trait for AST nodes.
 /// Each node should be able to generate code and print itself.
 pub trait Node {
@@ -93,6 +95,10 @@ pub enum AstNode {
         array: Box<AstNode>,
         index: Box<AstNode>,
     },
+    ArrayDeclarator {
+        base: Box<AstNode>, // Type of the array element (can be nested)
+        size: Box<AstNode>,
+    },
     /// Function call (func(arg1, arg2))
     FunctionCall {
         function: Box<AstNode>,
@@ -150,7 +156,6 @@ pub enum BinaryOperator {
     GreaterThan,
     LessThanOrEqual,
     GreaterThanOrEqual,
-    // Add any other binary operators you need
 }
 
 /// Unary operators
@@ -158,7 +163,6 @@ pub enum BinaryOperator {
 pub enum UnaryOperator {
     Negate,
     Not,
-    // Add any other unary operators you need
 }
 
 /// A simple type specifier enum.
@@ -171,7 +175,21 @@ pub enum TypeSpecifier {
     Long,
     Float,
     Double,
-    // Add any other type specifiers you need
+}
+
+// Implement Display for TypeSpecifier
+impl fmt::Display for TypeSpecifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypeSpecifier::Void => write!(f, "void"),
+            TypeSpecifier::Char => write!(f, "char"),
+            TypeSpecifier::Short => write!(f, "short"),
+            TypeSpecifier::Int => write!(f, "int"),
+            TypeSpecifier::Long => write!(f, "long"),
+            TypeSpecifier::Float => write!(f, "float"),
+            TypeSpecifier::Double => write!(f, "double"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

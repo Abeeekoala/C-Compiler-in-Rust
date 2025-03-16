@@ -31,19 +31,35 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
         AstNode::ExpressionStatement(_) => generate_expression_statement(node, context),
         AstNode::UnaryOperation { op, operand } => generate_unary_operation(op, operand, context),
         AstNode::Declaration { type_spec, declarator, initializer } => {
-            // Generate code for a single declaration
-            if let AstNode::Identifier(name) = &**declarator {
-                // Allocate space for the variable
-                let offset = context.add_variable(name.to_string(), "int".to_string());
-
-                // Initialize if an initializer is present
-                if let Some(init_expr) = initializer {
-                    let reg = generate_expression(init_expr, context)?;
-                    context.emit(&format!("    sw {}, {}(s0)", reg, offset));
-                    context.free_register(&reg);
-                }
+            match &**declarator {
+                AstNode::Identifier(name) => {
+                    let offset = context.add_variable(name.to_string(), type_spec.to_string());
+                    if let Some(init_expr) = initializer {
+                        let reg = generate_expression(init_expr, context)?;
+                        context.emit(&format!("    sw {}, {}(s0)", reg, offset));
+                        context.free_register(&reg);
+                    }
+                    Ok(())
+                },
+                AstNode::ArrayDeclarator { base, size } => {
+                    if let AstNode::Identifier(name) = &**base {
+                        let array_size = if let AstNode::IntConstant(size_val) = &**size {
+                            *size_val as usize
+                        } else {
+                            return Err(CompileError::CodegenError("Array size must be a constant".to_string()));
+                        };
+                        let offset = context.add_array(name.to_string(), type_spec.to_string(), array_size);
+                        // Initializers for arrays can be added later if needed
+                        if initializer.is_some() {
+                            return Err(CompileError::CodegenError("Array initializers not supported yet".to_string()));
+                        }
+                        Ok(())
+                    } else {
+                        Err(CompileError::CodegenError("Invalid array name".to_string()))
+                    }
+                },
+                _ => Err(CompileError::CodegenError("Unsupported declarator type".to_string())),
             }
-            Ok(())
         },
         AstNode::FunctionDeclaration { .. } => {
             // Function declarations are just prototypes and don't generate code
@@ -294,15 +310,15 @@ fn generate_switch_statement(
 
         // Compare with case value
         let case_value_reg = generate_expression(&case.value, context)?;
-        context.emit(&format!("beq {0}, {1}, {2}", expr_reg, case_value_reg, label));
+        context.emit(&format!("    beq {0}, {1}, {2}", expr_reg, case_value_reg, label));
         context.free_register(&case_value_reg);
     }
 
     // Handle default case
     if default.is_some() {
-        context.emit(&format!("j {}", default_label));
+        context.emit(&format!("    j {}", default_label));
     } else {
-        context.emit(&format!("j {}", end_label));
+        context.emit(&format!("    j {}", end_label));
     }
 
     // Generate case bodies

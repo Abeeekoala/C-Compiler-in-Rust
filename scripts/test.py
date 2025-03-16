@@ -216,7 +216,7 @@ def run_test(driver: Path) -> Result:
 
     # Compile
     return_code, _, timed_out = run_subprocess(
-        cmd=[COMPILER_FILE, str(to_assemble), f"{log_path}.s"],
+        cmd=[COMPILER_FILE, str(to_assemble), f"{log_path}.s", "--debug"],
         timeout=RUN_TIMEOUT_SECONDS,
         env=custom_env,
         log_path=f"{log_path}.compiler",

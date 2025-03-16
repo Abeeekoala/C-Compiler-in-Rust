@@ -36,8 +36,6 @@ pub struct CodeGenContext {
     pub used_temp_registers: Vec<String>,
     /// Available temporary registers
     pub available_temp_registers: Vec<String>,
-    /// Add a variable table to track variables
-    pub variables: HashMap<String, (i32, String)>, // (offset, type)
     /// Next temporary register counter when we run out of predefined registers
     next_temp_reg: usize,
 
@@ -60,7 +58,6 @@ impl CodeGenContext {
             output: String::new(),
             used_temp_registers: Vec::new(),
             available_temp_registers: temp_regs.iter().map(|&s| s.to_string()).collect(),
-            variables: HashMap::new(),
             next_temp_reg: 0,
             break_labels: Vec::new(),
         }
@@ -141,7 +138,13 @@ impl CodeGenContext {
 
     /// Get a variable's offset and type from the symbol table
     pub fn get_variable(&self, name: &str) -> Option<(i32, String)> {
-        self.variables.get(name).cloned()
+        self.symbols.get(name).map(|symbol| {
+            if let StorageLocation::Stack(offset) = symbol.location {
+                (offset, symbol.type_info.clone())
+            } else {
+                panic!("Variable not on stack")
+            }
+        })
     }
 
     /// Generate the function prologue
@@ -175,8 +178,12 @@ impl CodeGenContext {
         self.stack_offset -= 4;
         let offset = self.stack_offset;
 
-        // Add variable to symbol table
-        self.variables.insert(name, (offset, type_name));
+        // Also add to symbols HashMap for consistency
+        self.symbols.insert(name, Symbol {
+            location: StorageLocation::Stack(offset),
+            size: 4,
+            type_info: type_name,
+        });
 
         offset
     }
@@ -208,5 +215,27 @@ impl CodeGenContext {
             "t6".to_string(), "t5".to_string(), "t4".to_string(),
             "t3".to_string(), "t2".to_string(), "t1".to_string(), "t0".to_string()
         ];
+    }
+
+    /// Add an array to the symbol table
+    pub fn add_array(&mut self, name: String, type_name: String, size: usize) -> i32 {
+        // Calculate total array size in bytes (4 bytes per int)
+        let array_size_bytes = size * 4;
+
+        // Allocate space on the stack for the array
+        self.stack_offset -= array_size_bytes as i32;
+        let offset = self.stack_offset;
+
+        // Add array to symbol table
+        let array_type = format!("{}[{}]", type_name, size);
+
+        // Also add to symbols HashMap for consistency
+        self.symbols.insert(name, Symbol {
+            location: StorageLocation::Stack(offset),
+            size: array_size_bytes,
+            type_info: array_type,
+        });
+
+        offset
     }
 }
