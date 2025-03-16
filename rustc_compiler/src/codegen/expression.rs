@@ -1,5 +1,6 @@
 use crate::ast::AstNode;
 use crate::codegen::context::CodeGenContext;
+use crate::codegen::context::StorageLocation;
 use crate::error::CompileError;
 /// Generate code for an expression
 pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
@@ -29,16 +30,12 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                         return Ok(rhs_reg);
                     }
                 },
-
-                // Array element assignment: array[index] = value
-                // Array element assignment: array[index] = value
-                AstNode::ArraySubscript { array, index } => {
-                    if let AstNode::Identifier(array_name) = &**array {
-                        let addr_reg = calculate_array_element_address(array_name, index, context)?;
-                        context.emit(&format!("    sw {}, 0({})", rhs_reg, addr_reg));
-                        context.free_register(&addr_reg);
-                        return Ok(rhs_reg);
-                    }
+                AstNode::ArraySubscript { .. } => {
+                    let (base, indices) = collect_array_access(lhs)?;
+                    let addr_reg = calculate_array_element_address(&base, &indices, context)?;
+                    context.emit(&format!("    sw {}, 0({})", rhs_reg, addr_reg));
+                    context.free_register(&addr_reg);
+                    return Ok(rhs_reg);
                 },
                 _ => {},
             }
@@ -60,14 +57,12 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
         },
         // Array subscript: array[index]
         AstNode::ArraySubscript { array, index } => {
-            if let AstNode::Identifier(array_name) = &**array {
-                let addr_reg = calculate_array_element_address(array_name, index, context)?;
-                let result_reg = context.get_register();
-                context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
-                context.free_register(&addr_reg);
-                return Ok(result_reg);
-            }
-            Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node)))
+            let (base, indices) = collect_array_access(node)?;
+            let addr_reg = calculate_array_element_address(&base, &indices, context)?;
+            let result_reg = context.get_register();
+            context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
+            context.free_register(&addr_reg);
+            Ok(result_reg)
         },
         // Handle other expression types
         _ => Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node))),
@@ -98,6 +93,11 @@ fn generate_identifier(name: &str, context: &mut CodeGenContext) -> Result<Strin
         },
         crate::codegen::context::StorageLocation::Stack(offset) => {
             context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+        },
+        StorageLocation::Global(label) => {
+            // For global variables, load address then load value
+            context.emit(&format!("    la {}, {}", result_reg, label));
+            context.emit(&format!("    lw {}, 0({})", result_reg, result_reg));
         },
     }
 
@@ -535,30 +535,102 @@ fn generate_function_call(
 
 fn calculate_array_element_address(
     array_name: &str,
-    index: &AstNode,
+    indices: &[AstNode],
     context: &mut CodeGenContext,
 ) -> Result<String, CompileError> {
-    if let Some((base_offset, _)) = context.get_variable(array_name) {
-        // Generate code for the index expression
-        let index_reg = generate_expression(index, context)?;
+    // data from the symbol (immutable borrow)
+    let (base_offset, dimensions, is_global, global_label) = {
+        if let Some(symbol) = context.lookup_symbol(array_name) {
+            match &symbol.location {
+                StorageLocation::Stack(offset) => {
+                    // Clone the dimensions
+                    (*offset, symbol.dimensions.clone(), false, String::new())
+                },
+                StorageLocation::Global(label) => {
+                    (0, symbol.dimensions.clone(), true, label.clone())
+                },
+                _ => {
+                    return Err(CompileError::CodegenError("Array has invalid storage type".to_string()));
+                }
+            }
+        } else {
+            return Err(CompileError::CodegenError(format!("Array '{}' not found", array_name)));
+        }
+    };
 
-        // Get a register for the address calculation
-        let addr_reg = context.get_register();
+    // Check if dimensions match
+    if indices.len() != dimensions.len() {
+        return Err(CompileError::CodegenError(format!(
+            "Number of indices ({}) does not match array dimensions ({})",
+            indices.len(),
+            dimensions.len()
+        )));
+    }
 
-        // Multiply index by 4 (size of int)
-        context.emit(&format!("    slli {0}, {1}, 2", addr_reg, index_reg));
+    // Generate code for each index expression
+    let mut index_regs = Vec::new();
+    for index in indices {
+        let reg = generate_expression(index, context)?;
+        index_regs.push(reg);
+    }
 
-        // Add the base offset
-        context.emit(&format!("    addi {0}, {0}, {1}", addr_reg, base_offset));
+    // Compute linear index for row-major order
+    let mut offset_reg = context.get_register();
+    context.emit(&format!("    mv {}, {}", offset_reg, index_regs[0])); // Start with i1
+    let mut tmp_reg = context.get_register();
+    for m in 1..dimensions.len() {
+        let dim = dimensions[m];
+        context.emit(&format!("    li {}, {}", tmp_reg, dim)); // Load dimension into temp reg
+        context.emit(&format!("    mul {}, {}, {}", offset_reg, offset_reg, tmp_reg)); // offset *= dm
+        context.emit(&format!("    add {}, {}, {}", offset_reg, offset_reg, index_regs[m])); // offset += im
+    }
+    context.free_register(&tmp_reg);
+    // Compute final address: s0 + base_offset + linear_index * element_size
+    let addr_reg = context.get_register();
+    context.emit(&format!("    slli {0}, {1}, 2", addr_reg, offset_reg)); // *4 for int size
 
-        // Add the frame pointer to get the final address
-        context.emit(&format!("    add {0}, {0}, s0", addr_reg));
-
-        // Free the index register
-        context.free_register(&index_reg);
-
-        Ok(addr_reg)
+    if is_global {
+        // For global arrays, load the base address then add the offset
+        let temp_reg = context.get_register();
+        context.emit(&format!("    la {}, {}", temp_reg, global_label));
+        context.emit(&format!("    add {}, {}, {}", addr_reg, addr_reg, temp_reg));
+        context.free_register(&temp_reg);
     } else {
-        Err(CompileError::CodegenError(format!("Array '{}' not found", array_name)))
+        // For local arrays, add the base offset and frame pointer
+        if base_offset >= -2048 && base_offset <= 2047 {
+            context.emit(&format!("    addi {0}, {0}, {1}", addr_reg, base_offset));
+        } else {
+            let temp_reg = context.get_register();
+            context.emit(&format!("    li {}, {}", temp_reg, base_offset));
+            context.emit(&format!("    add {0}, {0}, {1}", addr_reg, temp_reg));
+            context.free_register(&temp_reg);
+        }
+        context.emit(&format!("    add {0}, {0}, s0", addr_reg));
+    }
+
+    // Free temporary registers
+    for reg in index_regs {
+        context.free_register(&reg);
+    }
+    context.free_register(&offset_reg);
+
+    Ok(addr_reg)
+}
+
+fn collect_array_access(node: &AstNode) -> Result<(String, Vec<AstNode>), CompileError> {
+    let mut indices = Vec::new();
+    let mut current = node;
+    loop {
+        match current {
+            AstNode::ArraySubscript { array, index } => {
+                indices.push((**index).clone());
+                current = array;
+            },
+            AstNode::Identifier(name) => {
+                indices.reverse(); // Correct order: [i, j] for x[i][j]
+                return Ok((name.clone(), indices));
+            },
+            _ => return Err(CompileError::CodegenError("Invalid array access".to_string())),
+        }
     }
 }

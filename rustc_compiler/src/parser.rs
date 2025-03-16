@@ -110,7 +110,7 @@ impl Parser {
             // Check for initializer
             let initializer = if let Some(Token::Assign) = self.peek() {
                 self.advance(); // Consume '='
-                Some(Box::new(self.parse_expression()?))
+                Some(Box::new(self.parse_initializer()?))
             } else {
                 None
             };
@@ -166,6 +166,44 @@ impl Parser {
         }
     }
 
+    pub fn parse_initializer(&mut self) -> ParseResult {
+        match self.peek() {
+            Some(Token::LBrace) => self.parse_initializer_list(),
+            _ => self.parse_assignment_expression(),
+        }
+    }
+
+    pub fn parse_initializer_list(&mut self) -> ParseResult {
+        self.expect_token(Token::LBrace)?;
+
+        let mut initializers = Vec::new();
+
+        // Handle empty initializer list: {}
+        if let Some(Token::RBrace) = self.peek() {
+            self.advance();
+            return Ok(AstNode::InitializerList(initializers));
+        }
+
+        // Parse first initializer
+        initializers.push(Box::new(self.parse_initializer()?));
+
+        // Parse remaining initializers
+        while let Some(Token::Comma) = self.peek() {
+            self.advance(); // Consume comma
+
+            // Handle trailing comma: {1, 2, }
+            if let Some(Token::RBrace) = self.peek() {
+                break;
+            }
+
+            initializers.push(Box::new(self.parse_initializer()?));
+        }
+
+        self.expect_token(Token::RBrace)?;
+
+        Ok(AstNode::InitializerList(initializers))
+    }
+
     /// Parse a declarator
     fn parse_declarator(&mut self) -> ParseResult {
         // Check for identifier
@@ -217,7 +255,7 @@ impl Parser {
         let initializer = match self.peek() {
             Some(token) if *token == Token::Assign => {
                 self.expect_token(Token::Assign)?;
-                Some(Box::new(self.parse_expression()?))
+                Some(Box::new(self.parse_initializer()?))
             },
             _ => None
         };

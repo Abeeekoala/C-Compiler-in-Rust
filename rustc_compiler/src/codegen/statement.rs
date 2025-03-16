@@ -3,6 +3,7 @@ use crate::codegen::context::CodeGenContext;
 use crate::codegen::expression::generate_expression;
 use crate::error::CompileError;
 use crate::ast::SwitchCase;
+use crate::codegen::context::StorageLocation;
 
 
 /// Generate code for a statement
@@ -42,21 +43,21 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
                     Ok(())
                 },
                 AstNode::ArrayDeclarator { base, size } => {
-                    if let AstNode::Identifier(name) = &**base {
-                        let array_size = if let AstNode::IntConstant(size_val) = &**size {
-                            *size_val as usize
-                        } else {
-                            return Err(CompileError::CodegenError("Array size must be a constant".to_string()));
-                        };
-                        let offset = context.add_array(name.to_string(), type_spec.to_string(), array_size);
-                        // Initializers for arrays can be added later if needed
-                        if initializer.is_some() {
-                            return Err(CompileError::CodegenError("Array initializers not supported yet".to_string()));
+                    let (name, dimensions) = extract_array_declarator(declarator)?;
+                    let offset = context.add_array(name.to_string(), type_spec.to_string(), dimensions.clone());
+                    // Initializers for arrays can be added later if needed
+                    if let Some(init) = initializer {
+                        match &**init {
+                            AstNode::InitializerList(elements) => {
+                                // Initialize array with initializer list
+                                initialize_array(name.as_str(), &dimensions, elements, offset, context)?;
+                            },
+                            _ => {
+                                return Err(CompileError::CodegenError("Array initializer must be an initializer list".to_string()));
+                            }
                         }
-                        Ok(())
-                    } else {
-                        Err(CompileError::CodegenError("Invalid array name".to_string()))
                     }
+                    Ok(())
                 },
                 _ => Err(CompileError::CodegenError("Unsupported declarator type".to_string())),
             }
@@ -347,5 +348,245 @@ fn generate_switch_statement(
 
     context.emit(&format!("{}:", end_label));
     context.free_register(&expr_reg);
+    Ok(())
+}
+
+fn extract_array_declarator(declarator: &AstNode) -> Result<(String, Vec<usize>), CompileError> {
+    let mut sizes = Vec::new();
+    let mut current = declarator;
+    loop {
+        match current {
+            AstNode::ArrayDeclarator { base, size } => {
+                if let AstNode::IntConstant(val) = **size {
+                    sizes.push(val as usize);
+                    current = base;
+                } else {
+                    return Err(CompileError::CodegenError("Array size must be a constant integer".to_string()));
+                }
+            },
+            AstNode::Identifier(name) => {
+                sizes.reverse();
+                return Ok((name.clone(), sizes));
+            },
+            _ => return Err(CompileError::CodegenError("Invalid array declarator".to_string())),
+        }
+    }
+}
+
+fn initialize_array(
+    array_name: &str,
+    dimensions: &[usize],
+    elements: &[Box<AstNode>],
+    base_offset: i32,
+    context: &mut CodeGenContext,
+) -> Result<(), CompileError> {
+    // Check if this is a global array
+    let is_global = if let Some(symbol) = context.lookup_symbol(array_name) {
+        match symbol.location {
+            StorageLocation::Global(_) => true,
+            _ => false,
+        }
+    } else {
+        return Err(CompileError::CodegenError(format!("Array '{}' not found", array_name)));
+    };
+
+    if is_global {
+        let array_decl = format!("{}:", array_name);
+        let mut data_lines: Vec<&str> = context.data_section.lines().collect();
+        let mut i = 0;
+        while i < data_lines.len() {
+            if data_lines[i].trim() == array_decl {
+                data_lines.remove(i);
+                if i < data_lines.len() {
+                    data_lines.remove(i);
+                }
+                break;
+            }
+            i += 1;
+        }
+        context.data_section = data_lines.join("\n") + "\n";
+
+        // Add array with initialization
+        context.emit_data(&format!("{}:", array_name));
+
+        // For multi-dimensional arrays, flatten all values into a single list
+        let flat_values = flatten_initializer_list(elements, dimensions)?;
+
+        // Combine the directive and values on one line
+        context.emit_data(&format!("    .word {}", flat_values.join(", ")));
+    } else {
+        // For local arrays, use the existing implementation
+        if dimensions.len() > 1 && !elements.is_empty() {
+            match &*elements[0] {
+                AstNode::InitializerList(_) => {
+                    return initialize_multi_dimensional_array(array_name, dimensions, elements, base_offset, context);
+                },
+                _ => {
+                    return initialize_flat_array(array_name, dimensions, elements, base_offset, context);
+                }
+            }
+        }
+
+        return initialize_flat_array(array_name, dimensions, elements, base_offset, context);
+    }
+
+    Ok(())
+}
+
+/// Recursively flatten a nested initializer list into a single vector of constant values
+fn flatten_initializer_list(
+    elements: &[Box<AstNode>],
+    dimensions: &[usize],
+) -> Result<Vec<String>, CompileError> {
+    let mut result = Vec::new();
+
+    // Calculate the total expected elements for padding
+    let total_elements: usize = dimensions.iter().product();
+
+    if dimensions.len() <= 1 {
+        // Base case: process the 1D array elements
+        for element in elements {
+            match &**element {
+                AstNode::IntConstant(value) => {
+                    result.push(value.to_string());
+                },
+                _ => {
+                    return Err(CompileError::CodegenError(
+                        "Array initializers must be constants or nested initializer lists".to_string()
+                    ));
+                }
+            }
+        }
+
+        // Pad with zeros if needed
+        while result.len() < total_elements {
+            result.push("0".to_string());
+        }
+    } else {
+        // Recursive case: handle nested dimensions
+        let sub_array_size: usize = dimensions[1..].iter().product();
+        let mut processed_elements = 0;
+
+        for (i, element) in elements.iter().enumerate() {
+            if i >= dimensions[0] {
+                break; // Don't process more elements than the first dimension allows
+            }
+
+            match &**element {
+                AstNode::InitializerList(sub_elements) => {
+                    // Convert Box<AstNode> to a slice of references
+                    let sub_elements_ref: Vec<&Box<AstNode>> = sub_elements.iter().collect();
+                    let sub_elements_boxed: Vec<Box<AstNode>> =
+                        sub_elements_ref.iter().map(|e| (**e).clone().into()).collect();
+
+                    // Recursively process this sub-array
+                    let mut sub_results = flatten_initializer_list(
+                        &sub_elements_boxed,
+                        &dimensions[1..]
+                    )?;
+
+                    result.append(&mut sub_results);
+                    processed_elements += 1;
+                },
+                _ => {
+                    return Err(CompileError::CodegenError(
+                        "Expected nested initializer list for multi-dimensional array".to_string()
+                    ));
+                }
+            }
+        }
+
+        // Pad with empty sub-arrays if needed
+        while processed_elements < dimensions[0] {
+            // Add a full sub-array of zeros
+            for _ in 0..sub_array_size {
+                result.push("0".to_string());
+            }
+            processed_elements += 1;
+        }
+    }
+
+    Ok(result)
+}
+
+/// Initialize a flat array from a list of expressions
+fn initialize_flat_array(
+    array_name: &str,
+    dimensions: &[usize],
+    elements: &[Box<AstNode>],
+    base_offset: i32,
+    context: &mut CodeGenContext,
+) -> Result<(), CompileError> {
+    let addr_reg = context.get_register();
+
+    // Initialize each provided element
+    for (i, element) in elements.iter().enumerate() {
+        // Evaluate the initializer expression
+        let value_reg = generate_expression(element, context)?;
+
+        // Calculate element address: base_offset + i * 4
+        if i == 0 {
+            // First element: just set base address
+            if base_offset >= -2048 && base_offset <= 2047 {
+                context.emit(&format!("    addi {}, s0, {}", addr_reg, base_offset));
+            } else {
+                let temp_reg = context.get_register();
+                context.emit(&format!("    li {}, {}", temp_reg, base_offset));
+                context.emit(&format!("    add {}, s0, {}", addr_reg, temp_reg));
+                context.free_register(&temp_reg);
+            }
+        } else {
+            // Subsequent elements: increment address by 4
+            context.emit(&format!("    addi {}, {}, 4", addr_reg, addr_reg));
+        }
+
+        // Store the value to the calculated address
+        context.emit(&format!("    sw {}, 0({})", value_reg, addr_reg));
+
+        // Free value register
+        context.free_register(&value_reg);
+    }
+
+    // Free address register
+    context.free_register(&addr_reg);
+
+    Ok(())
+}
+
+/// Initialize a multi-dimensional array from nested initializer lists
+fn initialize_multi_dimensional_array(
+    array_name: &str,
+    dimensions: &[usize],
+    elements: &[Box<AstNode>],
+    base_offset: i32,
+    context: &mut CodeGenContext,
+) -> Result<(), CompileError> {
+    // Calculate size of each sub-array
+    let sub_array_elements: usize = dimensions.iter().skip(1).product();
+
+    // Process each nested initializer list
+    for (i, element) in elements.iter().enumerate() {
+        match &**element {
+            AstNode::InitializerList(sub_elements) => {
+                // Calculate offset for this sub-array
+                let sub_array_offset = base_offset + (i * sub_array_elements * 4) as i32;
+
+                // Recursively initialize this sub-array
+                initialize_array(
+                    array_name,
+                    &dimensions[1..],
+                    sub_elements,
+                    sub_array_offset,
+                    context,
+                )?;
+            },
+            _ => {
+                return Err(CompileError::CodegenError(
+                    "Expected nested initializer list for multi-dimensional array".to_string()
+                ));
+            }
+        }
+    }
+
     Ok(())
 }

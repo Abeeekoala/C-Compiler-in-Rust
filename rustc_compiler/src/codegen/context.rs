@@ -7,6 +7,8 @@ pub enum StorageLocation {
     Register(String),
     /// Stack allocation with offset from frame pointer
     Stack(i32),
+    /// Global variable in data section
+    Global(String),
 }
 
 /// Symbol table entry for tracking variables
@@ -18,6 +20,8 @@ pub struct Symbol {
     pub size: usize,
     /// Type information (basic for now)
     pub type_info: String,
+    /// Dimensions of the array
+    pub dimensions: Vec<usize>,
 }
 
 /// Manages the compilation context
@@ -32,6 +36,9 @@ pub struct CodeGenContext {
     pub label_counter: usize,
     /// Assembly output
     pub output: String,
+    pub data_section: String,
+    /// Flag to indicate whether we're inside a function
+    pub in_function: bool,
     /// Temporary registers currently in use
     pub used_temp_registers: Vec<String>,
     /// Available temporary registers
@@ -56,6 +63,8 @@ impl CodeGenContext {
             stack_offset: 0,
             label_counter: 0,
             output: String::new(),
+            data_section: String::new(),
+            in_function: false,
             used_temp_registers: Vec::new(),
             available_temp_registers: temp_regs.iter().map(|&s| s.to_string()).collect(),
             next_temp_reg: 0,
@@ -67,6 +76,12 @@ impl CodeGenContext {
     pub fn emit(&mut self, line: &str) {
         self.output.push_str(line);
         self.output.push('\n');
+    }
+
+    /// Add a line to the data section
+    pub fn emit_data(&mut self, line: &str) {
+        self.data_section.push_str(line);
+        self.data_section.push('\n');
     }
 
     pub fn push_break_label(&mut self, label: String) {
@@ -149,10 +164,13 @@ impl CodeGenContext {
 
     /// Generate the function prologue
     pub fn generate_function_prologue(&mut self) {
+        // Set the in_function flag
+        self.in_function = true;
+
         // Save frame pointer and return address
-        self.emit("    addi sp, sp, -64");
-        self.emit("    sw ra, 60(sp)");
-        self.emit("    sw s0, 56(sp)");
+        self.emit("    addi sp, sp, -512");
+        self.emit("    sw ra, 508(sp)");
+        self.emit("    sw s0, 504(sp)");
         self.emit("    addi s0, sp, 0");
 
         self.stack_offset = 0;
@@ -161,31 +179,63 @@ impl CodeGenContext {
     /// Generate the function epilogue
     pub fn generate_function_epilogue(&mut self) {
         // Restore frame pointer and return address
-        self.emit("    lw ra, 60(sp)");
-        self.emit("    lw s0, 56(sp)");
-        self.emit("    addi sp, sp, 64");
+        self.emit("    lw ra, 508(sp)");
+        self.emit("    lw s0, 504(sp)");
+        self.emit("    addi sp, sp, 512");
         self.emit("    ret");
+
+        // Clear the in_function flag
+        self.in_function = false;
     }
 
-    /// Get the generated assembly code
+    /// Get the generated assembly code (combined data and text sections)
     pub fn get_assembly(&self) -> String {
-        self.output.clone()
+        let mut full_assembly = String::new();
+
+        // Add data section if it's not empty
+        if !self.data_section.is_empty() {
+            full_assembly.push_str(".data\n");
+            full_assembly.push_str(&self.data_section);
+            full_assembly.push_str("\n");
+        }
+
+        // Add text section
+        full_assembly.push_str(".text\n");
+        full_assembly.push_str(&self.output);
+
+        full_assembly
     }
 
     /// Add a variable to the symbol table
     pub fn add_variable(&mut self, name: String, type_name: String) -> i32 {
-        // Allocate space on the stack for the variable
-        self.stack_offset -= 4;
-        let offset = self.stack_offset;
+        if self.in_function {
+            // Local variable - allocate on stack
+            self.stack_offset -= 4;
+            let offset = self.stack_offset;
 
-        // Also add to symbols HashMap for consistency
-        self.symbols.insert(name, Symbol {
-            location: StorageLocation::Stack(offset),
-            size: 4,
-            type_info: type_name,
-        });
+            self.symbols.insert(name, Symbol {
+                location: StorageLocation::Stack(offset),
+                size: 4,
+                type_info: type_name,
+                dimensions: Vec::new(),
+            });
 
-        offset
+            offset
+        } else {
+            // Global variable - add to data section
+            let label = name.clone();
+            self.emit_data(&format!("{}:", label));
+            self.emit_data(&format!("    .word 0  # Global variable: {}", name));
+
+            self.symbols.insert(name, Symbol {
+                location: StorageLocation::Global(label),
+                size: 4,
+                type_info: type_name,
+                dimensions: Vec::new(),
+            });
+
+            0 // Return value doesn't matter for globals
+        }
     }
 
     /// Get a register for temporary use
@@ -218,24 +268,50 @@ impl CodeGenContext {
     }
 
     /// Add an array to the symbol table
-    pub fn add_array(&mut self, name: String, type_name: String, size: usize) -> i32 {
-        // Calculate total array size in bytes (4 bytes per int)
-        let array_size_bytes = size * 4;
+    pub fn add_array(&mut self, name: String, type_name: String, dimensions: Vec<usize>) -> i32 {
+        // Calculate total array size in bytes
+        let mut total_size = 4; // Base element size (int = 4 bytes)
+        for dim in &dimensions {
+            total_size *= dim;
+        }
 
-        // Allocate space on the stack for the array
-        self.stack_offset -= array_size_bytes as i32;
-        let offset = self.stack_offset;
+        // Create array type representation
+        let mut array_type = type_name;
+        for dim in &dimensions {
+            array_type = format!("{}[{}]", array_type, dim);
+        }
 
-        // Add array to symbol table
-        let array_type = format!("{}[{}]", type_name, size);
+        if self.in_function {
+            // Local array - allocate on stack
+            self.stack_offset -= total_size as i32;
+            let offset = self.stack_offset;
 
-        // Also add to symbols HashMap for consistency
-        self.symbols.insert(name, Symbol {
-            location: StorageLocation::Stack(offset),
-            size: array_size_bytes,
-            type_info: array_type,
-        });
+            // Add to symbols HashMap
+            self.symbols.insert(name.clone(), Symbol {
+                location: StorageLocation::Stack(offset),
+                size: total_size,
+                type_info: array_type,
+                dimensions: dimensions,
+            });
 
-        offset
+            offset
+        } else {
+            // Global array - add to data section
+            let label = name.clone();
+            self.emit_data(&format!("{}:", label));
+
+            // For uninitialized array, reserve space
+            self.emit_data(&format!("    .space {}  # Global array: {}", total_size, name));
+
+            // Add to symbols HashMap
+            self.symbols.insert(name, Symbol {
+                location: StorageLocation::Global(label),
+                size: total_size,
+                type_info: array_type,
+                dimensions: dimensions,
+            });
+
+            0 // Return value doesn't matter for globals
+        }
     }
 }

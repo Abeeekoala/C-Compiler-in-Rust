@@ -24,6 +24,10 @@ pub fn print_symbol_table(context: &CodeGenContext) -> String {
             crate::codegen::context::StorageLocation::Register(reg) => {
                 output.push_str(&format!("  {} ({}): register={}\n",
                     name, symbol.type_info, reg));
+            },
+            crate::codegen::context::StorageLocation::Global(label) => {
+                output.push_str(&format!("  {} ({}): global label={}\n",
+                    name, symbol.type_info, label));
             }
         }
     }

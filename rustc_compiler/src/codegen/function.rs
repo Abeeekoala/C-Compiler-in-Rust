@@ -44,6 +44,7 @@ pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result
                             location: StorageLocation::Stack(stack_offset),
                             size: 4, // Assuming int
                             type_info: type_str.clone(),
+                            dimensions: Vec::new(),
                         };
 
                         context.add_symbol(param_name, symbol);

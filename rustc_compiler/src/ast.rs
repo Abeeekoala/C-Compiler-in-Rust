@@ -95,6 +95,7 @@ pub enum AstNode {
         array: Box<AstNode>,
         index: Box<AstNode>,
     },
+    InitializerList(Vec<Box<AstNode>>),
     ArrayDeclarator {
         base: Box<AstNode>, // Type of the array element (can be nested)
         size: Box<AstNode>,

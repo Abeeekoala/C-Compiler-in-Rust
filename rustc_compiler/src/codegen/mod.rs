@@ -10,13 +10,6 @@ use crate::codegen::context::CodeGenContext;
 /// Generate RISC-V assembly code from an AST
 pub fn generate_code(ast: &AstNode) -> Result<(String, CodeGenContext), CompileError> {
     let mut context = CodeGenContext::new();
-
-    // Data section
-    context.emit(".data");
-
-    // Text section
-    context.emit(".text");
-
     // Generate code for each top-level declaration
     match ast {
         AstNode::FunctionDefinition { .. } => {
