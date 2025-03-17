@@ -162,30 +162,88 @@ impl CodeGenContext {
         })
     }
 
-    /// Generate the function prologue
-    pub fn generate_function_prologue(&mut self) {
-        // Set the in_function flag
-        self.in_function = true;
-
-        // Save frame pointer and return address
-        self.emit("    addi sp, sp, -512");
-        self.emit("    sw ra, 508(sp)");
-        self.emit("    sw s0, 504(sp)");
-        self.emit("    addi s0, sp, 0");
-
-        self.stack_offset = 0;
+    /// Save all temporary registers before a function call
+    pub fn save_temp_registers(&mut self) {
+        // Collect register info first to avoid borrow checker issues
+        let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
+        for (i, reg) in registers.iter().enumerate() {
+            let offset = -((8 + (i * 4)) as i32);
+            self.emit(&format!("    sw {}, {}(s0)", reg, offset));
+        }
     }
 
-    /// Generate the function epilogue
+    /// Restore all temporary registers after a function call
+    pub fn restore_temp_registers(&mut self) {
+        let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
+        for (i, reg) in registers.iter().enumerate() {
+            let offset = -((8 + (i * 4)) as i32);
+            self.emit(&format!("    lw {}, {}(s0)", reg, offset));
+        }
+    }
+
+    pub fn save_registers_for_call(&mut self) {
+        let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
+        for (i, reg) in registers.iter().enumerate() {
+            let offset = -((4 + i * 4) as i32);
+            self.emit(&format!("    sw {}, {}(sp)", reg, offset));
+        }
+        if !self.used_temp_registers.is_empty() {
+            let offset = (self.used_temp_registers.len() * 4 + 15) & !15;
+            self.emit(&format!("    addi sp, sp, -{}", offset));
+        }
+    }
+
+    pub fn restore_registers_after_call(&mut self) {
+        if !self.used_temp_registers.is_empty() {
+            let offset = (self.used_temp_registers.len() * 4 + 15) & !15;
+            self.emit(&format!("    addi sp, sp, {}", offset));
+
+            let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
+            for (i, reg) in registers.iter().enumerate() {
+                let stack_offset = -((4 + i * 4) as i32);
+                self.emit(&format!("    lw {}, {}(sp)", reg, stack_offset));
+            }
+        }
+    }
+
+    /// Generate the function prologue with support for recursion
+    pub fn generate_function_prologue(&mut self) {
+        self.in_function = true;
+
+        // Save the old stack frame
+        self.emit("    addi sp, sp, -32");      // Make space for saved registers
+        self.emit("    sw ra, 28(sp)");         // Save return address
+        self.emit("    sw fp, 24(sp)");         // Save old frame pointer
+        self.emit("    addi fp, sp, 32");       // Set up new frame pointer
+
+        // Save callee-saved registers we'll use
+        self.emit("    sw s1, 20(sp)");
+        self.emit("    sw s2, 16(sp)");
+
+        // Reserve space for local variables (aligned to 16 bytes)
+        self.emit("    addi sp, sp, -32");      // Initial space for locals
+
+        self.stack_offset = -32;                 // Track stack allocations from here
+    }
+
+    /// Generate the function epilogue with proper cleanup
     pub fn generate_function_epilogue(&mut self) {
-        // Restore frame pointer and return address
-        self.emit("    lw ra, 508(sp)");
-        self.emit("    lw s0, 504(sp)");
-        self.emit("    addi sp, sp, 512");
+        // Deallocate local variables
+        self.emit("    mv sp, fp");             // Restore stack pointer
+        self.emit("    addi sp, sp, -32");      // Point to saved registers
+
+        // Restore saved registers
+        self.emit("    lw s2, 16(sp)");
+        self.emit("    lw s1, 20(sp)");
+        self.emit("    lw fp, 24(sp)");
+        self.emit("    lw ra, 28(sp)");
+
+        // Restore stack and return
+        self.emit("    addi sp, sp, 32");
         self.emit("    ret");
 
-        // Clear the in_function flag
         self.in_function = false;
+        self.reset_temp_registers();
     }
 
     /// Get the generated assembly code (combined data and text sections)
@@ -193,7 +251,7 @@ impl CodeGenContext {
         let mut full_assembly = String::new();
 
         // Add data section if it's not empty
-        if !self.data_section.is_empty() {
+        if (!self.data_section.is_empty()) {
             full_assembly.push_str(".data\n");
             full_assembly.push_str(&self.data_section);
             full_assembly.push_str("\n");
@@ -313,5 +371,18 @@ impl CodeGenContext {
 
             0 // Return value doesn't matter for globals
         }
+    }
+
+    pub fn enter_scope(&mut self) {
+        //  - will be needed for nested scopes
+    }
+
+    pub fn exit_scope(&mut self) {
+        //  - will be needed for nested scopes
+    }
+
+    pub fn declare_function(&mut self, name: &str, param_types: Vec<String>) {
+        // Just storinh the current function name
+        self.current_function = Some(name.to_string());
     }
 }

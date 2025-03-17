@@ -15,9 +15,11 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
         AstNode::Assignment { lhs, rhs } => generate_assignment(lhs, rhs, context),
         AstNode::ForLoop { init, condition, increment, body } => {generate_for_loop(init, condition, increment, body, context)},
         AstNode::BlockStatement(stmts) => {
+            context.enter_scope();
             for stmt in stmts {
                 generate_statement(stmt, context)?;
             }
+            context.exit_scope();
             Ok(())
         },
         AstNode::SwitchStatement { expr, cases, default } => {
