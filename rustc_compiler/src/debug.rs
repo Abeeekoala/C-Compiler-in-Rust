@@ -13,23 +13,51 @@ pub fn print_symbol_table(context: &CodeGenContext) -> String {
     output.push_str("Symbol Table:\n");
     output.push_str("=============\n");
 
-    // Print symbols that represent variables
-    output.push_str("Variables:\n");
-    for (name, symbol) in &context.symbols {
-        match &symbol.location {
-            crate::codegen::context::StorageLocation::Stack(offset) => {
-                output.push_str(&format!("  {} ({}): stack offset={}\n",
-                    name, symbol.type_info, offset));
-            },
-            crate::codegen::context::StorageLocation::Register(reg) => {
-                output.push_str(&format!("  {} ({}): register={}\n",
-                    name, symbol.type_info, reg));
-            },
-            crate::codegen::context::StorageLocation::Global(label) => {
-                output.push_str(&format!("  {} ({}): global label={}\n",
-                    name, symbol.type_info, label));
+    // Print active scopes
+    output.push_str("Active Scopes:\n");
+    for (i, scope) in context.symbols.iter().enumerate() {
+        output.push_str(&format!("Scope {}:\n", i));
+        for (name, symbol) in scope {
+            match &symbol.location {
+                crate::codegen::context::StorageLocation::Stack(offset) => {
+                    output.push_str(&format!("  {} ({}): stack offset={}\n",
+                        name, symbol.type_info, offset));
+                },
+                crate::codegen::context::StorageLocation::Register(reg) => {
+                    output.push_str(&format!("  {} ({}): register={}\n",
+                        name, symbol.type_info, reg));
+                },
+                crate::codegen::context::StorageLocation::Global(label) => {
+                    output.push_str(&format!("  {} ({}): global label={}\n",
+                        name, symbol.type_info, label));
+                }
             }
         }
+        output.push_str("\n");
+    }
+
+    // Print popped scopes
+    output.push_str("Popped Scopes:\n");
+    output.push_str("==============\n");
+    for (i, scope) in context.scope_history.iter().enumerate() {
+        output.push_str(&format!("Popped Scope {}:\n", i + 1));
+        for (name, symbol) in scope {
+            match &symbol.location {
+                crate::codegen::context::StorageLocation::Stack(offset) => {
+                    output.push_str(&format!("  {} ({}): stack offset={}\n",
+                        name, symbol.type_info, offset));
+                },
+                crate::codegen::context::StorageLocation::Register(reg) => {
+                    output.push_str(&format!("  {} ({}): register={}\n",
+                        name, symbol.type_info, reg));
+                },
+                crate::codegen::context::StorageLocation::Global(label) => {
+                    output.push_str(&format!("  {} ({}): global label={}\n",
+                        name, symbol.type_info, label));
+                }
+            }
+        }
+        output.push_str("\n");
     }
 
     // Print current function if available

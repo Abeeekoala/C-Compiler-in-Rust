@@ -474,20 +474,7 @@ fn generate_function_call(
     };
 
     // Save all used registers to stack before the call
-    let used_regs = context.get_used_registers();
-    let needs_saving = !used_regs.is_empty();
-
-    if needs_saving {
-        // Allocate stack space for saving registers
-        let stack_adjustment = used_regs.len() * 4; // 4 bytes per register
-        context.emit(&format!("    addi sp, sp, -{}", stack_adjustment));
-
-        // Save registers to stack
-        for (i, reg) in used_regs.iter().enumerate() {
-            let offset = i * 4;
-            context.emit(&format!("    sw {}, {}(sp)", reg, offset));
-        }
-    }
+    let registers = context.save_temp_registers();
 
     // Process arguments
     for (i, arg) in args.iter().enumerate().take(8) {
@@ -516,19 +503,7 @@ fn generate_function_call(
         context.emit(&format!("    mv {}, a0", result_reg));
     }
 
-    // Restore saved registers from stack
-    if needs_saving {
-        for (i, reg) in used_regs.iter().enumerate() {
-            if reg != &result_reg {  // Don't restore if it's our result register
-                let offset = i * 4;
-                context.emit(&format!("    lw {}, {}(sp)", reg, offset));
-            }
-        }
-
-        // Deallocate stack space
-        let stack_adjustment = used_regs.len() * 4;
-        context.emit(&format!("    addi sp, sp, {}", stack_adjustment));
-    }
+    context.restore_temp_registers(registers);
 
     Ok(result_reg)
 }

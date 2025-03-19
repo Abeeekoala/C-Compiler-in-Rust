@@ -29,8 +29,9 @@ pub struct Symbol {
 pub struct CodeGenContext {
     /// Current function name
     pub current_function: Option<String>,
-    /// Symbol table mapping variable names to their storage locations
-    pub symbols: HashMap<String, Symbol>,
+    /// Symbol table with scopes
+    pub symbols: Vec<HashMap<String, Symbol>>,
+    pub scope_history: Vec<HashMap<String, Symbol>>,
     /// Next available stack offset
     pub stack_offset: i32,
     /// Next available label number for generating unique labels
@@ -60,7 +61,8 @@ impl CodeGenContext {
 
         CodeGenContext {
             current_function: None,
-            symbols: HashMap::new(),
+            symbols: vec![HashMap::new()], // Initialize with global scope
+            scope_history:Vec::new(),
             stack_offset: 0,
             label_counter: 0,
             output: String::new(),
@@ -142,25 +144,148 @@ impl CodeGenContext {
         self.stack_offset
     }
 
+    pub fn enter_scope(&mut self) {
+        self.symbols.push(HashMap::new());
+        println!("Entering scope, current function: {:?}", self.current_function);
+    }
+
+    pub fn exit_scope(&mut self) {
+        if self.symbols.len() > 1 { // Preserve global scope
+            let popped_scope = self.symbols.pop().unwrap();
+            self.scope_history.push(popped_scope);
+        }
+    }
     /// Add a symbol to the symbol table
     pub fn add_symbol(&mut self, name: &str, symbol: Symbol) {
-        self.symbols.insert(name.to_string(), symbol);
+        self.symbols.last_mut().unwrap().insert(name.to_string(), symbol);
+    }
+
+    /// Add a variable to the symbol table
+    pub fn add_variable(&mut self, name: String, type_name: String) -> i32 {
+        if self.in_function {
+            // Local variable - allocate on stack
+            self.stack_offset -= 4;
+            let offset = self.stack_offset;
+
+            self.symbols.last_mut().unwrap().insert(name, Symbol {
+                location: StorageLocation::Stack(offset),
+                size: 4,
+                type_info: type_name,
+                dimensions: Vec::new(),
+            });
+
+            offset
+        } else {
+            // Global variable - add to data section
+            let label = name.clone();
+            self.emit_data(&format!("{}:", label));
+            self.emit_data(&format!("    .word 0  # Global variable: {}", name));
+
+            self.symbols.last_mut().unwrap().insert(name, Symbol {
+                location: StorageLocation::Global(label),
+                size: 4,
+                type_info: type_name,
+                dimensions: Vec::new(),
+            });
+
+            0 // Return value doesn't matter for globals
+        }
+    }
+
+    /// Add an array to the symbol table
+    pub fn add_array(&mut self, name: String, type_name: String, dimensions: Vec<usize>) -> i32 {
+        // Calculate total array size in bytes
+        let mut total_size = 4; // Base element size (int = 4 bytes)
+        for dim in &dimensions {
+            total_size *= dim;
+        }
+
+        // Create array type representation
+        let mut array_type = type_name;
+        for dim in &dimensions {
+            array_type = format!("{}[{}]", array_type, dim);
+        }
+
+        if self.in_function {
+            // Local array - allocate on stack
+            self.stack_offset -= total_size as i32;
+            let offset = self.stack_offset;
+
+            // Add to symbols HashMap
+            self.symbols.last_mut().unwrap().insert(name.clone(), Symbol {
+                location: StorageLocation::Stack(offset),
+                size: total_size,
+                type_info: array_type,
+                dimensions: dimensions,
+            });
+
+            offset
+        } else {
+            // Global array - add to data section
+            let label = name.clone();
+            self.emit_data(&format!("{}:", label));
+
+            // For uninitialized array, reserve space
+            self.emit_data(&format!("    .space {}  # Global array: {}", total_size, name));
+
+            // Add to symbols HashMap
+            self.symbols.last_mut().unwrap().insert(name.clone(), Symbol {
+                location: StorageLocation::Global(label),
+                size: total_size,
+                type_info: array_type,
+                dimensions: dimensions,
+            });
+
+            0 // Return value doesn't matter for globals
+        }
     }
 
     /// Look up a symbol in the symbol table
     pub fn lookup_symbol(&self, name: &str) -> Option<&Symbol> {
-        self.symbols.get(name)
+        for scope in self.symbols.iter().rev() {
+        if let Some(symbol) = scope.get(name) {
+                return Some(symbol);
+            }
+        }
+        None
     }
 
     /// Get a variable's offset and type from the symbol table
     pub fn get_variable(&self, name: &str) -> Option<(i32, String)> {
-        self.symbols.get(name).map(|symbol| {
-            if let StorageLocation::Stack(offset) = symbol.location {
-                (offset, symbol.type_info.clone())
-            } else {
-                panic!("Variable not on stack")
+        // Flatten the nested options to return just one option
+        for scope in self.symbols.iter().rev() {
+            if let Some(symbol) = scope.get(name) {
+                if let StorageLocation::Stack(offset) = symbol.location {
+                    return Some((offset, symbol.type_info.clone()));
+                } else {
+                    panic!("Variable not on stack");
+                }
             }
-        })
+        }
+        None
+    }
+
+    /// Save all temporary registers before a function call
+    pub fn save_temp_registers(&mut self) -> Vec<String> {
+        // Collect register info first to avoid borrow checker issues
+        let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
+        let stack_adjustment = registers.len() * 4; // 4 bytes per register
+        self.emit(&format!("    addi sp, sp, -{}", stack_adjustment));
+        for (i, reg) in registers.iter().enumerate() {
+            let offset = i * 4;
+            self.emit(&format!("    sw {}, {}(sp)", reg, offset));
+        }
+        registers
+    }
+
+    /// Restore all temporary registers after a function call
+    pub fn restore_temp_registers(&mut self, registers: Vec<String>) {
+        let stack_adjustment = registers.len() * 4; // 4 bytes per register
+        for (i, reg) in registers.iter().enumerate() {
+            let offset = i * 4;
+            self.emit(&format!("    lw {}, {}(sp)", reg, offset));
+        }
+        self.emit(&format!("    addi sp, sp, {}", stack_adjustment));
     }
 
     /// Generate the function prologue with support for recursion
@@ -208,7 +333,7 @@ impl CodeGenContext {
         let mut full_assembly = String::new();
 
         // Add data section if it's not empty
-        if (!self.data_section.is_empty()) {
+        if !self.data_section.is_empty() {
             full_assembly.push_str(".data\n");
             full_assembly.push_str(&self.data_section);
             full_assembly.push_str("\n");
@@ -219,38 +344,6 @@ impl CodeGenContext {
         full_assembly.push_str(&self.output);
 
         full_assembly
-    }
-
-    /// Add a variable to the symbol table
-    pub fn add_variable(&mut self, name: String, type_name: String) -> i32 {
-        if self.in_function {
-            // Local variable - allocate on stack
-            self.stack_offset -= 4;
-            let offset = self.stack_offset;
-
-            self.symbols.insert(name, Symbol {
-                location: StorageLocation::Stack(offset),
-                size: 4,
-                type_info: type_name,
-                dimensions: Vec::new(),
-            });
-
-            offset
-        } else {
-            // Global variable - add to data section
-            let label = name.clone();
-            self.emit_data(&format!("{}:", label));
-            self.emit_data(&format!("    .word 0  # Global variable: {}", name));
-
-            self.symbols.insert(name, Symbol {
-                location: StorageLocation::Global(label),
-                size: 4,
-                type_info: type_name,
-                dimensions: Vec::new(),
-            });
-
-            0 // Return value doesn't matter for globals
-        }
     }
 
     /// Get a register for temporary use
@@ -282,64 +375,8 @@ impl CodeGenContext {
         ];
     }
 
-    /// Add an array to the symbol table
-    pub fn add_array(&mut self, name: String, type_name: String, dimensions: Vec<usize>) -> i32 {
-        // Calculate total array size in bytes
-        let mut total_size = 4; // Base element size (int = 4 bytes)
-        for dim in &dimensions {
-            total_size *= dim;
-        }
-
-        // Create array type representation
-        let mut array_type = type_name;
-        for dim in &dimensions {
-            array_type = format!("{}[{}]", array_type, dim);
-        }
-
-        if self.in_function {
-            // Local array - allocate on stack
-            self.stack_offset -= total_size as i32;
-            let offset = self.stack_offset;
-
-            // Add to symbols HashMap
-            self.symbols.insert(name.clone(), Symbol {
-                location: StorageLocation::Stack(offset),
-                size: total_size,
-                type_info: array_type,
-                dimensions: dimensions,
-            });
-
-            offset
-        } else {
-            // Global array - add to data section
-            let label = name.clone();
-            self.emit_data(&format!("{}:", label));
-
-            // For uninitialized array, reserve space
-            self.emit_data(&format!("    .space {}  # Global array: {}", total_size, name));
-
-            // Add to symbols HashMap
-            self.symbols.insert(name, Symbol {
-                location: StorageLocation::Global(label),
-                size: total_size,
-                type_info: array_type,
-                dimensions: dimensions,
-            });
-
-            0 // Return value doesn't matter for globals
-        }
-    }
-
-    pub fn enter_scope(&mut self) {
-        //  - will be needed for nested scopes
-    }
-
-    pub fn exit_scope(&mut self) {
-        //  - will be needed for nested scopes
-    }
-
     pub fn declare_function(&mut self, name: &str, param_types: Vec<String>) {
-        // Just storinh the current function name
+        // Just storing the current function name
         self.current_function = Some(name.to_string());
     }
 }
