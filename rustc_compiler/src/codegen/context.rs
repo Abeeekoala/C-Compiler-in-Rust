@@ -108,16 +108,10 @@ impl CodeGenContext {
 
     /// Allocate a register for temporary use
     pub fn allocate_register(&mut self) -> Option<String> {
-        if let Some(reg) = self.available_temp_registers.pop() {
+        self.available_temp_registers.pop().map(|reg| {
             self.used_temp_registers.push(reg.clone());
-            Some(reg)
-        } else {
-            // If we're out of predefined registers, generate a new one
-            let reg = format!("t{}", self.next_temp_reg);
-            self.next_temp_reg += 1;
-            self.used_temp_registers.push(reg.clone());
-            Some(reg)
-        }
+            reg
+        })
     }
 
     /// Free a previously allocated register
@@ -179,6 +173,9 @@ impl CodeGenContext {
             // Global variable - add to data section
             let label = name.clone();
             self.emit_data(&format!("{}:", label));
+
+            // Check if there's an initializer value from the parser
+            // For now, we just initialize to 0
             self.emit_data(&format!("    .word 0  # Global variable: {}", name));
 
             self.symbols.last_mut().unwrap().insert(name, Symbol {
@@ -188,7 +185,7 @@ impl CodeGenContext {
                 dimensions: Vec::new(),
             });
 
-            0 // Return value doesn't matter for globals
+            0
         }
     }
 
@@ -255,13 +252,20 @@ impl CodeGenContext {
         // Flatten the nested options to return just one option
         for scope in self.symbols.iter().rev() {
             if let Some(symbol) = scope.get(name) {
-                if let StorageLocation::Stack(offset) = symbol.location {
-                    return Some((offset, symbol.type_info.clone()));
-                } else {
-                    panic!("Variable not on stack");
+                match &symbol.location {
+                    StorageLocation::Stack(offset) => {
+                        return Some((*offset, symbol.type_info.clone()));
+                    },
+                    StorageLocation::Global(label) => {
+                        // For global variables, return 0 as the offset
+                        // The actual label will be handled elsewhere
+                        return Some((0, symbol.type_info.clone()));
+                    },
+                    _ => {} // Ignore other storage locations
                 }
             }
         }
+        println!("Variable not found: {}", name);
         None
     }
 
@@ -295,8 +299,8 @@ impl CodeGenContext {
         // Save the old stack frame
         self.emit("    addi sp, sp, -32");      // Make space for saved registers
         self.emit("    sw ra, 28(sp)");         // Save return address
-        self.emit("    sw fp, 24(sp)");         // Save old frame pointer
-        self.emit("    addi fp, sp, 32");       // Set up new frame pointer
+        self.emit("    sw s0, 24(sp)");         // Save old frame pointer
+        self.emit("    addi s0, sp, 32");       // Set up new frame pointer
 
         // Save callee-saved registers we'll use
         self.emit("    sw s1, 20(sp)");
@@ -311,13 +315,13 @@ impl CodeGenContext {
     /// Generate the function epilogue with proper cleanup
     pub fn generate_function_epilogue(&mut self) {
         // Deallocate local variables
-        self.emit("    mv sp, fp");             // Restore stack pointer
+        self.emit("    mv sp, s0");             // Restore stack pointer
         self.emit("    addi sp, sp, -32");      // Point to saved registers
 
         // Restore saved registers
         self.emit("    lw s2, 16(sp)");
         self.emit("    lw s1, 20(sp)");
-        self.emit("    lw fp, 24(sp)");
+        self.emit("    lw s0, 24(sp)");
         self.emit("    lw ra, 28(sp)");
 
         // Restore stack and return
@@ -349,13 +353,8 @@ impl CodeGenContext {
     /// Get a register for temporary use
     pub fn get_register(&mut self) -> String {
         // Always allocate a new register, don't reuse existing ones
-        self.allocate_register().unwrap_or_else(|| {
-            // This is a fallback in case allocate_register fails (which shouldn't happen)
-            let reg = format!("t{}", self.next_temp_reg);
-            self.next_temp_reg += 1;
-            self.used_temp_registers.push(reg.clone());
-            reg
-        })
+        let reg = self.allocate_register().unwrap();
+        reg
     }
 
     /// Get all currently used registers that need to be saved
@@ -378,5 +377,29 @@ impl CodeGenContext {
     pub fn declare_function(&mut self, name: &str, param_types: Vec<String>) {
         // Just storing the current function name
         self.current_function = Some(name.to_string());
+    }
+
+    /// Initialize a global variable with a value
+    pub fn initialize_global_variable(&mut self, name: String, value: i32) {
+        // Update data section to include initialization value
+        let mut data_lines: Vec<String> = self.data_section.lines()
+                                               .map(String::from)
+                                               .collect();
+
+        let mut i = 0;
+        let var_declaration = format!("{}:", name);
+
+        while i < data_lines.len() {
+            if data_lines[i].trim() == var_declaration {
+                // Found the variable declaration, update the next line
+                if i + 1 < data_lines.len() {
+                    data_lines[i + 1] = format!("    .word {}  # Global variable: {}", value, name);
+                }
+                break;
+            }
+            i += 1;
+        }
+
+        self.data_section = data_lines.join("\n") + "\n";
     }
 }

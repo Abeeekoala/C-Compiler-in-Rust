@@ -7,11 +7,10 @@ int f(int a, int b)
     return;
 }
 
-int main()
+int g()
 {
-    int a = 5;
     int b = 2;
     f(a, b);
     int c = 3;
-    return b;
+    return a;
 }

@@ -14,12 +14,14 @@ f:
     sw s1, 20(sp)
     sw s2, 16(sp)
     addi sp, sp, -32
+    sw a0, -36(s0)
+    sw a1, -40(s0)
     li t0, 10
-    sw t0, -36(s0)
-    li t0, 20
-    sw t0, -40(s0)
-    li t0, 30
     sw t0, -44(s0)
+    li t0, 20
+    sw t0, -48(s0)
+    li t0, 30
+    sw t0, -52(s0)
     mv sp, fp
     addi sp, sp, -32
     lw s2, 16(sp)
@@ -42,6 +44,10 @@ main:
     li t0, 2
     sw t0, -40(s0)
     addi sp, sp, -0
+    lw t0, -36(s0)
+    mv a0, t0
+    lw t0, -40(s0)
+    mv a1, t0
     call f
     mv t0, a0
     addi sp, sp, 0

@@ -10,14 +10,24 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             let result_reg = context.get_register();
 
             // Check if it's a variable reference
-            if let Some((offset, _)) = context.get_variable(name) {
-                // Load from stack
-                context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+            if let Some(symbol) = context.lookup_symbol(name) {
+                match &symbol.location {
+                    StorageLocation::Stack(offset) => {
+                        // Load local variable from stack
+                        context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+                    },
+                    StorageLocation::Global(label) => {
+                        // Load global variable using its label
+                        context.emit(&format!("    la {}, {}", result_reg, label));
+                        context.emit(&format!("    lw {}, 0({})", result_reg, result_reg));
+                    },
+                    _ => {}
+                }
                 return Ok(result_reg);
             }
 
             // Otherwise it might be a function name or something else
-            Err(CompileError::CodegenError(format!("Unknown identifier: {}", name)))
+            Err(CompileError::CodegenError(format!("Unknown identifier in expression: {}", name)))
         },
         AstNode::Assignment { lhs, rhs } => {
             let rhs_reg = generate_expression(rhs, context)?;

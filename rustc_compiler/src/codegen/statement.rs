@@ -38,9 +38,21 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
                 AstNode::Identifier(name) => {
                     let offset = context.add_variable(name.to_string(), type_spec.to_string());
                     if let Some(init_expr) = initializer {
-                        let reg = generate_expression(init_expr, context)?;
-                        context.emit(&format!("    sw {}, {}(s0)", reg, offset));
-                        context.free_register(&reg);
+                        if context.in_function {
+                            // Local variable initialization
+                            let reg = generate_expression(init_expr, context)?;
+                            context.emit(&format!("    sw {}, {}(s0)", reg, offset));
+                            context.free_register(&reg);
+                        } else {
+                            // Global variable initialization
+                            if let AstNode::IntConstant(value) = &**init_expr {
+                                context.initialize_global_variable(name.to_string(), *value);
+                            } else {
+                                return Err(CompileError::CodegenError(
+                                    "Global variable initializer must be a constant".to_string()
+                                ));
+                            }
+                        }
                     }
                     Ok(())
                 },
