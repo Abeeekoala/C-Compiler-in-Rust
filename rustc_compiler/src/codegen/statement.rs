@@ -27,7 +27,13 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
         },
         AstNode::BreakStatement => {
             let label = context.get_current_break_label()
-                .ok_or(CompileError::CodegenError("break outside loop/switch".into()))?;
+                .ok_or(CompileError::CodegenError("break is outside loop/switch".into()))?;
+            context.emit(&format!("j {}", label));
+            Ok(())
+        },
+        AstNode::ContinueStatement => {
+            let label = context.get_current_continue_label()
+                .ok_or(CompileError::CodegenError("continue is outside loop/switch".into()))?;
             context.emit(&format!("j {}", label));
             Ok(())
         },
@@ -109,6 +115,8 @@ fn generate_while_statement(node: &AstNode, context: &mut CodeGenContext) -> Res
         let start_label = context.generate_label("while_start");
         let end_label = context.generate_label("while_end");
 
+        context.push_break_label(end_label.clone());
+        context.push_continue_label(start_label.clone());
         // Emit start label
         context.emit(&format!("{}:", start_label));
 
@@ -121,6 +129,9 @@ fn generate_while_statement(node: &AstNode, context: &mut CodeGenContext) -> Res
 
         // Generate loop body
         generate_statement(body, context)?;
+
+        context.pop_break_label();
+        context.pop_continue_label();
 
         // Jump back to start
         context.emit(&format!("    j {}", start_label));
@@ -142,34 +153,37 @@ fn generate_for_loop(
     body: &Box<AstNode>,
     context: &mut CodeGenContext,
 ) -> Result<(), CompileError> {
-    // Generate initialization code
     generate_statement(init, context)?;
 
+    // Generate all labels first
     let loop_start = context.generate_label("loop_start");
+    let loop_increment = context.generate_label("loop_increment");
     let loop_cond = context.generate_label("loop_cond");
     let loop_end = context.generate_label("loop_end");
 
-    // Jump to condition check first
     context.emit(&format!("j {}", loop_cond));
-
-    // Loop body label
     context.emit(&format!("{}:", loop_start));
 
-    // Generate loop body
+    // Push labels before generating body
+    context.push_break_label(loop_end.clone());
+    context.push_continue_label(loop_increment.clone());
+
     generate_statement(body, context)?;
 
-    // Generate increment code
+    // Pop labels after body generation
+    context.pop_break_label();
+    context.pop_continue_label();
+
+    // Add the increment label and code
+    context.emit(&format!("{}:", loop_increment));
     generate_statement(increment, context)?;
 
-    // Condition check label
+    // Condition check
     context.emit(&format!("{}:", loop_cond));
-
-    // Generate condition check
     let cond_reg = generate_expression(condition, context)?;
     context.emit(&format!("bnez {}, {}", cond_reg, loop_start));
     context.free_register(&cond_reg);
 
-    // End label
     context.emit(&format!("{}:", loop_end));
 
     Ok(())

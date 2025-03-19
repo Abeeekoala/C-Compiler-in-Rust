@@ -49,6 +49,7 @@ pub struct CodeGenContext {
     next_temp_reg: usize,
 
     break_labels: Vec<String>,
+    continue_labels: Vec<String>,
 }
 
 impl CodeGenContext {
@@ -72,6 +73,7 @@ impl CodeGenContext {
             available_temp_registers: temp_regs.iter().map(|&s| s.to_string()).collect(),
             next_temp_reg: 0,
             break_labels: Vec::new(),
+            continue_labels: Vec::new(),
         }
     }
 
@@ -97,6 +99,18 @@ impl CodeGenContext {
 
     pub fn get_current_break_label(&self) -> Option<&String> {
         self.break_labels.last()
+    }
+
+    pub fn push_continue_label(&mut self, label: String) {
+        self.continue_labels.push(label);
+    }
+
+    pub fn pop_continue_label(&mut self) -> Option<String> {
+        self.continue_labels.pop()
+    }
+
+    pub fn get_current_continue_label(&self) -> Option<&String> {
+        self.continue_labels.last()
     }
 
     /// Generate a unique label

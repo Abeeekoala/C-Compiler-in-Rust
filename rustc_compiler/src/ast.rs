@@ -24,6 +24,7 @@ pub enum AstNode {
         default: Option<Vec<Box<AstNode>>>,
     },
     BreakStatement,
+    ContinueStatement,
     /// A function definition (e.g. int main() { ... }).
     FunctionDefinition {
         decl_specifiers: Vec<Box<AstNode>>,

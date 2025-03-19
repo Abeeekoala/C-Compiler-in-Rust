@@ -325,6 +325,11 @@ impl Parser {
                 self.expect_token(Token::Semicolon)?;
                 Ok(AstNode::BreakStatement)
             },
+            Some(Token::ContinueKw) => {
+                self.advance();
+                self.expect_token(Token::Semicolon)?;
+                Ok(AstNode::ContinueStatement)
+            },
 
             // Expression statements (e.g., function calls, assignments)
             _ => {
