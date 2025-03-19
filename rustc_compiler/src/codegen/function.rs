@@ -95,40 +95,6 @@ pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result
     }
 }
 
-pub fn generate_function_call(
-    function: &AstNode,
-    args: &[Box<AstNode>],
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
-    // Get new register for result before saving registers
-    let result_reg = context.get_register();
-
-    // Save all caller-saved registers
-    context.save_registers_for_call();
-
-    // Evaluate and pass arguments in reverse order to handle recursive evaluation
-    for (i, arg) in args.iter().enumerate().take(8) {
-        let arg_reg = generate_expression(arg, context)?;
-        if arg_reg != format!("a{}", i) {
-            context.emit(&format!("    mv a{}, {}", i, arg_reg));
-        }
-        context.free_register(&arg_reg);
-    }
-
-    // Make the function call
-    if let AstNode::Identifier(name) = function {
-        context.emit(&format!("    call {}", name));
-    } else {
-        return Err(CompileError::CodegenError("Expected function name".to_string()));
-    }
-
-    if result_reg != "a0" {
-        context.emit(&format!("    mv {}, a0", result_reg));
-    }
-    context.restore_registers_after_call();
-
-    Ok(result_reg)
-}
 
 /// Extract function parameters from a function declarator
 fn get_function_params(declarator: &AstNode) -> Option<Vec<(String, String)>> {

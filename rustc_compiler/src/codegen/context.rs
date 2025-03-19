@@ -25,6 +25,7 @@ pub struct Symbol {
 }
 
 /// Manages the compilation context
+#[derive(Debug)]
 pub struct CodeGenContext {
     /// Current function name
     pub current_function: Option<String>,
@@ -160,50 +161,6 @@ impl CodeGenContext {
                 panic!("Variable not on stack")
             }
         })
-    }
-
-    /// Save all temporary registers before a function call
-    pub fn save_temp_registers(&mut self) {
-        // Collect register info first to avoid borrow checker issues
-        let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
-        for (i, reg) in registers.iter().enumerate() {
-            let offset = -((8 + (i * 4)) as i32);
-            self.emit(&format!("    sw {}, {}(s0)", reg, offset));
-        }
-    }
-
-    /// Restore all temporary registers after a function call
-    pub fn restore_temp_registers(&mut self) {
-        let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
-        for (i, reg) in registers.iter().enumerate() {
-            let offset = -((8 + (i * 4)) as i32);
-            self.emit(&format!("    lw {}, {}(s0)", reg, offset));
-        }
-    }
-
-    pub fn save_registers_for_call(&mut self) {
-        let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
-        for (i, reg) in registers.iter().enumerate() {
-            let offset = -((4 + i * 4) as i32);
-            self.emit(&format!("    sw {}, {}(sp)", reg, offset));
-        }
-        if !self.used_temp_registers.is_empty() {
-            let offset = (self.used_temp_registers.len() * 4 + 15) & !15;
-            self.emit(&format!("    addi sp, sp, -{}", offset));
-        }
-    }
-
-    pub fn restore_registers_after_call(&mut self) {
-        if !self.used_temp_registers.is_empty() {
-            let offset = (self.used_temp_registers.len() * 4 + 15) & !15;
-            self.emit(&format!("    addi sp, sp, {}", offset));
-
-            let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
-            for (i, reg) in registers.iter().enumerate() {
-                let stack_offset = -((4 + i * 4) as i32);
-                self.emit(&format!("    lw {}, {}(sp)", reg, stack_offset));
-            }
-        }
     }
 
     /// Generate the function prologue with support for recursion

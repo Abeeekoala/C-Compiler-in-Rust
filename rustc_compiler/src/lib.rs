@@ -186,44 +186,44 @@ mod tests {
     fn test_simple_return() {
         let source = "int main() { return 42; }";
         let ast = parse_source(source).expect("Failed to parse source");
-        let assembly = codegen::generate_code(&ast).expect("Failed to generate code");
+        let (assembly, context) = codegen::generate_code(&ast).expect("Failed to generate code");
 
         assert!(assembly.contains("li t0, 42"));
         assert!(assembly.contains("mv a0, t0"));
-        println!("Generated assembly:\n{}", assembly);
+        println!("Generated assembly:\n{:?}", assembly);
     }
 
     #[test]
     fn test_arithmetic() {
         let source = "int main() { return 5 * 10 + 3; }";
         let ast = parse_source(source).expect("Failed to parse source");
-        let assembly = codegen::generate_code(&ast).expect("Failed to generate code");
+        let (assembly, context) = codegen::generate_code(&ast).expect("Failed to generate code");
 
         assert!(assembly.contains("li "));
         assert!(assembly.contains("mul "));
         assert!(assembly.contains("add "));
-        println!("Generated assembly:\n{}", assembly);
+        println!("Generated assembly:\n{:?}", assembly);
     }
 
     #[test]
     fn test_if_else() {
         let source = "int main() { if (1) return 10; else return 20; }";
         let ast = parse_source(source).expect("Failed to parse source");
-        let assembly = codegen::generate_code(&ast).expect("Failed to generate code");
+        let (assembly, context) = codegen::generate_code(&ast).expect("Failed to generate code");
 
         assert!(assembly.contains("beqz"));
         assert!(assembly.contains("j"));
-        println!("Generated assembly for if-else:\n{}", assembly);
+        println!("Generated assembly for if-else:\n{:?}", assembly);
     }
 
     #[test]
     fn test_if_no_else() {
         let source = "int main() { if (1) return 10; return 0; }";
         let ast = parse_source(source).expect("Failed to parse source");
-        let assembly = codegen::generate_code(&ast).expect("Failed to generate code");
+        let (assembly, context) = codegen::generate_code(&ast).expect("Failed to generate code");
 
         assert!(assembly.contains("beqz"));
-        println!("Generated assembly for if without else:\n{}", assembly);
+        println!("Generated assembly for if without else:\n{:?}", assembly);
     }
 
     #[test]
@@ -264,47 +264,51 @@ mod codegen_tests {
     fn test_return_constant() {
         let source = "int main() { return 42; }";
         let ast = parse_source(source).unwrap();
-        let assembly = codegen::generate_code(&ast).expect("Failed to generate code");
+        let (assembly, context) = codegen::generate_code(&ast).expect("Failed to generate code");
 
         // Verify the assembly contains the expected instruction
         assert!(assembly.contains("li t0, 42"));
         assert!(assembly.contains("mv a0, t0"));
         println!("Generated assembly:\n{}", assembly);
+        println!("Context:\n{:?}", context);
     }
 
     #[test]
     fn test_arithmetic() {
         let source = "int main() { return 3 + 4 * 5; }";
         let ast = parse_source(source).unwrap();
-        let assembly = codegen::generate_code(&ast).expect("Failed to generate code");
+        let (assembly, context) = codegen::generate_code(&ast).expect("Failed to generate code");
 
         // Basic verification that arithmetic operations are generated
         assert!(assembly.contains("li "));
         assert!(assembly.contains("mul "));
         assert!(assembly.contains("add "));
         println!("Generated assembly:\n{}", assembly);
+        println!("Context:\n{:?}", context);
     }
 
     #[test]
     fn test_if_statement() {
         let source = "int main() { if (1) { return 42; } else { return 24; } }";
         let ast = parse_source(source).unwrap();
-        let assembly = codegen::generate_code(&ast).expect("Failed to generate code");
+        let (assembly, context) = codegen::generate_code(&ast).expect("Failed to generate code");
 
         // Verify the assembly contains the if structure
         assert!(assembly.contains("beqz"));
         assert!(assembly.contains("j"));
         println!("Generated assembly for if-else:\n{}", assembly);
+        println!("Context:\n{:?}", context);
     }
 
     #[test]
     fn test_if_without_else() {
         let source = "int main() { if (1) { return 42; } return 0; }";
         let ast = parse_source(source).unwrap();
-        let assembly = codegen::generate_code(&ast).expect("Failed to generate code");
+        let (assembly, context) = codegen::generate_code(&ast).expect("Failed to generate code");
 
         // Verify the assembly contains the if structure
         assert!(assembly.contains("beqz"));
         println!("Generated assembly for if without else:\n{}", assembly);
+        println!("Context:\n{:?}", context);
     }
 }
