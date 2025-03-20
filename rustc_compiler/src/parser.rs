@@ -333,7 +333,6 @@ impl Parser {
                 Ok(AstNode::ContinueStatement)
             },
 
-            // Expression statements (e.g., function calls, assignments)
             _ => {
                 let expr = self.parse_expression()?;
                 // Expect ';'
@@ -488,26 +487,21 @@ impl Parser {
             Some(Box::new(self.parse_expression()?))
         };
 
-        // Expect ';'
-        if let Some(Token::Semicolon) = self.peek() {
-            self.advance(); // Consume ';'
-            return Ok(AstNode::ReturnStatement(expr));
-        }
+        self.expect_token(Token::Semicolon)?;
 
-        Err(CompileError::ParserError("Expected ';' after return statement".to_string()))
+        Ok(AstNode::ReturnStatement(expr))
     }
 
     /// Parse an expression statement
     pub fn parse_expression_statement(&mut self) -> ParseResult {
-        let expr = self.parse_expression()?;
-
-        // Expect ';'
         if let Some(Token::Semicolon) = self.peek() {
-            self.advance(); // Consume ';'
-            return Ok(expr);
+            self.advance();
+            return Ok(AstNode::ExpressionStatement(Box::new(AstNode::NodeList(Vec::new()))));
         }
+        let expr = self.parse_expression()?;
+        self.expect_token(Token::Semicolon)?;
 
-        Err(CompileError::ParserError("Expected ';' after expression".to_string()))
+        Ok(AstNode::ExpressionStatement(Box::new(expr)))
     }
 
     /// Parse an expression
@@ -532,13 +526,77 @@ impl Parser {
     /// Parse assignment expressions
     fn parse_assignment_expression(&mut self) -> ParseResult {
         let lhs = self.parse_conditional_expression()?;
-        if let Some(Token::Assign) = self.peek() {
-            self.advance();
-            let rhs = self.parse_assignment_expression()?;
-            return Ok(AstNode::Assignment {
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            });
+
+        match self.peek() {
+            Some(Token::Assign) => {
+                self.advance(); // Consume '='
+                let rhs = self.parse_assignment_expression()?;
+                return Ok(AstNode::Assignment {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                });
+            },
+            Some(Token::AddAssign) => {
+                self.advance(); // Consume '+='
+                let rhs = self.parse_assignment_expression()?;
+                return Ok(AstNode::Assignment {
+                    lhs: Box::new(lhs.clone()),
+                    rhs: Box::new(AstNode::BinaryOperation {
+                        op: "+".to_string(),
+                        left: Box::new(lhs),
+                        right: Box::new(rhs),
+                    }),
+                });
+            },
+            Some(Token::SubAssign) => {
+                self.advance(); // Consume '-='
+                let rhs = self.parse_assignment_expression()?;
+                return Ok(AstNode::Assignment {
+                    lhs: Box::new(lhs.clone()),
+                    rhs: Box::new(AstNode::BinaryOperation {
+                        op: "-".to_string(),
+                        left: Box::new(lhs),
+                        right: Box::new(rhs),
+                    }),
+                });
+            },
+            Some(Token::MulAssign) => {
+                self.advance(); // Consune '*='
+                let rhs = self.parse_assignment_expression()?;
+                return Ok(AstNode::Assignment {
+                    lhs: Box::new(lhs.clone()),
+                    rhs: Box::new(AstNode::BinaryOperation {
+                        op: "*".to_string(),
+                        left: Box::new(lhs),
+                        right: Box::new(rhs),
+                    }),
+                });
+            },
+            Some(Token::DivAssign) => {
+                self.advance(); // Consume '/='
+                let rhs = self.parse_assignment_expression()?;
+                return Ok(AstNode::Assignment {
+                    lhs: Box::new(lhs.clone()),
+                    rhs: Box::new(AstNode::BinaryOperation {
+                        op: "/".to_string(),
+                        left: Box::new(lhs),
+                        right: Box::new(rhs),
+                    }),
+                });
+            },
+            Some(Token::ModAssign) => {
+                self.advance(); // Consume '%='
+                let rhs = self.parse_assignment_expression()?;
+                return Ok(AstNode::Assignment {
+                    lhs: Box::new(lhs.clone()),
+                    rhs: Box::new(AstNode::BinaryOperation {
+                        op: "%".to_string(),
+                        left: Box::new(lhs),
+                        right: Box::new(rhs),
+                    }),
+                });
+            },
+            _ => {}
         }
         Ok(lhs)
     }
@@ -787,7 +845,7 @@ impl Parser {
         match self.peek() {
             Some(Token::Add) => {
                 self.advance(); // Consume '+'
-                let expr = self.parse_cast_expression()?;
+                let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "+".to_string(),
                     operand: Box::new(expr),
@@ -795,7 +853,7 @@ impl Parser {
             },
             Some(Token::Sub) => {
                 self.advance(); // Consume '-'
-                let expr = self.parse_cast_expression()?;
+                let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "-".to_string(),
                     operand: Box::new(expr),
@@ -803,7 +861,7 @@ impl Parser {
             },
             Some(Token::Tilde) => {
                 self.advance(); // Consume '~'
-                let expr = self.parse_cast_expression()?;
+                let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "~".to_string(),
                     operand: Box::new(expr),
@@ -811,7 +869,7 @@ impl Parser {
             },
             Some(Token::Not) => {
                 self.advance(); // Consume '!'
-                let expr = self.parse_cast_expression()?;
+                let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "!".to_string(),
                     operand: Box::new(expr),
@@ -835,7 +893,7 @@ impl Parser {
             },
             Some(Token::Mul) => { // Pointer dereference
                 self.advance(); // Consume '*'
-                let expr = self.parse_cast_expression()?;
+                let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "*".to_string(),
                     operand: Box::new(expr),
@@ -843,7 +901,7 @@ impl Parser {
             },
             Some(Token::BitAnd) => { // Address-of operator
                 self.advance(); // Consume '&'
-                let expr = self.parse_cast_expression()?;
+                let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "&".to_string(),
                     operand: Box::new(expr),
