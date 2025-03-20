@@ -45,11 +45,14 @@ pub struct CodeGenContext {
     pub used_temp_registers: Vec<String>,
     /// Available temporary registers
     pub available_temp_registers: Vec<String>,
-    /// Next temporary register counter when we run out of predefined registers
-    next_temp_reg: usize,
+    pub used_fp_registers: Vec<String>,
+    pub available_fp_registers: Vec<String>,
 
     break_labels: Vec<String>,
     continue_labels: Vec<String>,
+
+    /// Map of function names to their return types
+    pub function_signatures: HashMap<String, String>,
 }
 
 impl CodeGenContext {
@@ -58,6 +61,10 @@ impl CodeGenContext {
         // Initialize with RISC-V calling convention registers
         let temp_regs = vec![
             "t6", "t5", "t4", "t3", "t2", "t1", "t0",
+        ];
+
+        let fp_temp_regs = vec![
+            "ft11", "ft10", "ft9", "ft8", "ft7", "ft6", "ft5", "ft4", "ft3", "ft2", "ft1", "ft0",
         ];
 
         CodeGenContext {
@@ -71,9 +78,11 @@ impl CodeGenContext {
             in_function: false,
             used_temp_registers: Vec::new(),
             available_temp_registers: temp_regs.iter().map(|&s| s.to_string()).collect(),
-            next_temp_reg: 0,
+            used_fp_registers: Vec::new(),
+            available_fp_registers: fp_temp_regs.iter().map(|&s| s.to_string()).collect(),
             break_labels: Vec::new(),
             continue_labels: Vec::new(),
+            function_signatures: HashMap::new(),
         }
     }
 
@@ -120,6 +129,7 @@ impl CodeGenContext {
         label
     }
 
+    /// Integer Register methods:
     /// Allocate a register for temporary use
     pub fn allocate_register(&mut self) -> Option<String> {
         self.available_temp_registers.pop().map(|reg| {
@@ -143,6 +153,95 @@ impl CodeGenContext {
             }
         }
     }
+
+    /// Get a register for temporary use
+    pub fn get_register(&mut self) -> String {
+        // Always allocate a new register, don't reuse existing ones
+        let reg = self.allocate_register().unwrap();
+        reg
+    }
+
+    /// Save all temporary registers before a function call
+    pub fn save_temp_registers(&mut self) -> Vec<String> {
+        // Collect register info first to avoid borrow checker issues
+        let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
+        let stack_adjustment = registers.len() * 4; // 4 bytes per register
+        self.emit(&format!("    addi sp, sp, -{}", stack_adjustment));
+        for (i, reg) in registers.iter().enumerate() {
+            let offset = i * 4;
+            self.emit(&format!("    sw {}, {}(sp)", reg, offset));
+        }
+        registers
+    }
+
+    /// Restore all temporary registers after a function call
+    pub fn restore_temp_registers(&mut self, registers: Vec<String>) {
+        let stack_adjustment = registers.len() * 4; // 4 bytes per register
+        for (i, reg) in registers.iter().enumerate() {
+            let offset = i * 4;
+            self.emit(&format!("    lw {}, {}(sp)", reg, offset));
+        }
+        self.emit(&format!("    addi sp, sp, {}", stack_adjustment));
+    }
+
+    /// Floating-point Register methods:
+    /// Allocate a floating-point register for temporary use
+    pub fn allocate_fp_register(&mut self) -> Option<String> {
+        self.available_fp_registers.pop().map(|reg| {
+            self.used_fp_registers.push(reg.clone());
+            reg
+        })
+    }
+
+    /// Free a previously allocated floating-point register
+    pub fn free_fp_register(&mut self, reg: &str) {
+        if let Some(pos) = self.used_fp_registers.iter().position(|r| r == reg) {
+            self.used_fp_registers.remove(pos);
+
+            // Only put registers back in the available pool if they're from our predefined list
+            if reg.starts_with('f') && reg.len() >= 3 &&
+               (reg.starts_with("ft") || reg.starts_with("fs")) {
+                self.available_fp_registers.push(reg.to_string());
+            }
+        }
+    }
+
+    /// Get a floating-point register for temporary use
+    pub fn get_fp_register(&mut self) -> String {
+        let reg = self.allocate_fp_register().unwrap();
+        reg
+    }
+
+    /// Save all temporary floating-point registers before a function call
+    pub fn save_fp_registers(&mut self) -> Vec<String> {
+        // Collect register info first to avoid borrow checker issues
+        let registers: Vec<_> = self.used_fp_registers.iter().cloned().collect();
+        let stack_adjustment = registers.len() * 4; // 4 bytes per register (for single precision)
+
+        if !registers.is_empty() {
+            self.emit(&format!("    addi sp, sp, -{}", stack_adjustment));
+            for (i, reg) in registers.iter().enumerate() {
+                let offset = i * 4;
+                self.emit(&format!("    fsw {}, {}(sp)", reg, offset));
+            }
+        }
+
+        registers
+    }
+
+    /// Restore all temporary floating-point registers after a function call
+    pub fn restore_fp_registers(&mut self, registers: Vec<String>) {
+        let stack_adjustment = registers.len() * 4; // 4 bytes per register
+
+        if !registers.is_empty() {
+            for (i, reg) in registers.iter().enumerate() {
+                let offset = i * 4;
+                self.emit(&format!("    flw {}, {}(sp)", reg, offset));
+            }
+            self.emit(&format!("    addi sp, sp, {}", stack_adjustment));
+        }
+    }
+
 
     /// Allocate space on the stack for a variable
     pub fn allocate_stack_space(&mut self, size: usize) -> i32 {
@@ -170,14 +269,16 @@ impl CodeGenContext {
 
     /// Add a variable to the symbol table
     pub fn add_variable(&mut self, name: String, type_name: String) -> i32 {
+        let allocated_size = if type_name == "double" { 8 } else { 4 };
+        self.stack_offset -= allocated_size as i32;
+
         if self.in_function {
             // Local variable - allocate on stack
-            self.stack_offset -= 4;
             let offset = self.stack_offset;
 
             self.symbols.last_mut().unwrap().insert(name, Symbol {
                 location: StorageLocation::Stack(offset),
-                size: 4,
+                size: allocated_size,
                 type_info: type_name,
                 dimensions: Vec::new(),
             });
@@ -194,7 +295,7 @@ impl CodeGenContext {
 
             self.symbols.last_mut().unwrap().insert(name, Symbol {
                 location: StorageLocation::Global(label),
-                size: 4,
+                size: allocated_size,
                 type_info: type_name,
                 dimensions: Vec::new(),
             });
@@ -283,29 +384,6 @@ impl CodeGenContext {
         None
     }
 
-    /// Save all temporary registers before a function call
-    pub fn save_temp_registers(&mut self) -> Vec<String> {
-        // Collect register info first to avoid borrow checker issues
-        let registers: Vec<_> = self.used_temp_registers.iter().cloned().collect();
-        let stack_adjustment = registers.len() * 4; // 4 bytes per register
-        self.emit(&format!("    addi sp, sp, -{}", stack_adjustment));
-        for (i, reg) in registers.iter().enumerate() {
-            let offset = i * 4;
-            self.emit(&format!("    sw {}, {}(sp)", reg, offset));
-        }
-        registers
-    }
-
-    /// Restore all temporary registers after a function call
-    pub fn restore_temp_registers(&mut self, registers: Vec<String>) {
-        let stack_adjustment = registers.len() * 4; // 4 bytes per register
-        for (i, reg) in registers.iter().enumerate() {
-            let offset = i * 4;
-            self.emit(&format!("    lw {}, {}(sp)", reg, offset));
-        }
-        self.emit(&format!("    addi sp, sp, {}", stack_adjustment));
-    }
-
     /// Generate the function prologue with support for recursion
     pub fn generate_function_prologue(&mut self) {
         self.in_function = true;
@@ -364,13 +442,6 @@ impl CodeGenContext {
         full_assembly
     }
 
-    /// Get a register for temporary use
-    pub fn get_register(&mut self) -> String {
-        // Always allocate a new register, don't reuse existing ones
-        let reg = self.allocate_register().unwrap();
-        reg
-    }
-
     /// Get all currently used registers that need to be saved
     pub fn get_used_registers(&self) -> Vec<String> {
         self.used_temp_registers.clone()
@@ -379,7 +450,6 @@ impl CodeGenContext {
     /// Reset temporary registers after a function completes
     pub fn reset_temp_registers(&mut self) {
         self.used_temp_registers.clear();
-        self.next_temp_reg = 0;
 
         // Restore original available registers
         self.available_temp_registers = vec![
@@ -388,9 +458,12 @@ impl CodeGenContext {
         ];
     }
 
-    pub fn declare_function(&mut self, name: &str, param_types: Vec<String>) {
-        // Just storing the current function name
+    pub fn declare_function(&mut self, name: &str, return_type: String, param_types: Vec<String>) {
+        // Store the current function name
         self.current_function = Some(name.to_string());
+
+        // Register the function with its return type
+        self.register_function(name, return_type);
     }
 
     /// Initialize a global variable with a value
@@ -416,4 +489,55 @@ impl CodeGenContext {
 
         self.data_section = data_lines.join("\n") + "\n";
     }
+
+    /// Initialize a global variable with a raw bit pattern (for floating-point)
+    pub fn initialize_global_variable_raw(&mut self, name: String, value: u32) {
+        // Update data section to include initialization value
+        let mut data_lines: Vec<String> = self.data_section.lines()
+                                               .map(String::from)
+                                               .collect();
+
+        let mut i = 0;
+        let var_declaration = format!("{}:", name);
+
+        while i < data_lines.len() {
+            if data_lines[i].trim() == var_declaration {
+                // Found the variable declaration, update the next line
+                if i + 1 < data_lines.len() {
+                    data_lines[i + 1] = format!("    .word 0x{:08x}  # Global variable: {}", value, name);
+                }
+                break;
+            }
+            i += 1;
+        }
+
+        self.data_section = data_lines.join("\n") + "\n";
+    }
+
+    /// Register a function with its return type
+    pub fn register_function(&mut self, name: &str, return_type: String) {
+        self.function_signatures.insert(name.to_string(), return_type);
+    }
+
+    /// Get the return type of a function
+    pub fn get_function_return_type(&self, name: &str) -> Option<String> {
+        self.function_signatures.get(name).cloned()
+    }
+
+    // /// Register common standard library functions with their return types
+    // pub fn register_standard_functions(&mut self) {
+    //     // C standard library functions
+    //     self.register_function("printf", "int".to_string());
+    //     self.register_function("scanf", "int".to_string());
+    //     self.register_function("malloc", "void*".to_string());
+    //     self.register_function("free", "void".to_string());
+
+    //     // Math functions
+    //     self.register_function("sqrt", "float".to_string());
+    //     self.register_function("sin", "float".to_string());
+    //     self.register_function("cos", "float".to_string());
+    //     self.register_function("tan", "float".to_string());
+
+    //     // Add more library functions as needed
+    // }
 }

@@ -4,7 +4,7 @@ use crate::codegen::expression::generate_expression;
 use crate::error::CompileError;
 use crate::ast::SwitchCase;
 use crate::codegen::context::StorageLocation;
-
+use crate::codegen::expression::get_expression_type;
 
 /// Generate code for a statement
 pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
@@ -42,16 +42,63 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
         AstNode::Declaration { type_spec, declarator, initializer } => {
             match &**declarator {
                 AstNode::Identifier(name) => {
-                    let offset = context.add_variable(name.to_string(), type_spec.to_string());
+                    // Get type size
+                    let size = match type_spec {
+                        crate::ast::TypeSpecifier::Double => 8,
+                        _ => 4, // int, float, char all use 4 bytes
+                    };
+
+                    // Get type string
+                    let type_str = match type_spec {
+                        crate::ast::TypeSpecifier::Int => "int".to_string(),
+                        crate::ast::TypeSpecifier::Char => "char".to_string(),
+                        crate::ast::TypeSpecifier::Float => "float".to_string(),
+                        crate::ast::TypeSpecifier::Double => "double".to_string(),
+                        crate::ast::TypeSpecifier::Void => "void".to_string(),
+                        _ => todo!(),
+                    };
+
+                    // Allocate space
+                    let stack_offset = context.add_variable(name.to_string(), type_str.clone());
+
+                    // Handle initializer
                     if let Some(init_expr) = initializer {
                         if context.in_function {
                             // Local variable initialization
                             let reg = generate_expression(init_expr, context)?;
-                            context.emit(&format!("    sw {}, {}(s0)", reg, offset));
-                            context.free_register(&reg);
+
+                            // Store based on type
+                            if type_str == "float" && reg.starts_with('f') {
+                                context.emit(&format!("    fsw {}, {}(s0)", reg, stack_offset));
+                                context.free_fp_register(&reg);
+                            } else if type_str == "double" && reg.starts_with('f') {
+                                context.emit(&format!("    fsd {}, {}(s0)", reg, stack_offset));
+                                context.free_fp_register(&reg);
+                            } else if (type_str == "float" || type_str == "double") && !reg.starts_with('f') {
+                                // Integer result needs conversion
+                                let fp_reg = context.get_fp_register();
+                                context.emit(&format!("    fcvt.s.w {}, {}", fp_reg, reg));
+                                context.emit(&format!("    fsw {}, {}(s0)", fp_reg, stack_offset));
+                                context.free_register(&reg);
+                                context.free_fp_register(&fp_reg);
+                            } else {
+                                // Regular integer
+                                context.emit(&format!("    sw {}, {}(s0)", reg, stack_offset));
+                                context.free_register(&reg);
+                            }
                         } else {
                             // Global variable initialization
-                            if let AstNode::IntConstant(value) = &**init_expr {
+                            if type_str == "float" || type_str == "double" {
+                                if let AstNode::FloatConstant(value) = &**init_expr {
+                                    // For floating-point, we need to emit the binary representation
+                                    let float_bits = f32::to_bits(*value as f32);
+                                    context.initialize_global_variable_raw(name.to_string(), float_bits);
+                                } else {
+                                    return Err(CompileError::CodegenError(
+                                        "Global floating-point variable initializer must be a constant".to_string()
+                                    ));
+                                }
+                            } else if let AstNode::IntConstant(value) = &**init_expr {
                                 context.initialize_global_variable(name.to_string(), *value);
                             } else {
                                 return Err(CompileError::CodegenError(
@@ -97,12 +144,80 @@ fn generate_assignment(
     rhs: &AstNode,
     context: &mut CodeGenContext,
 ) -> Result<(), CompileError> {
-    let rhs_reg = generate_expression(rhs, context)?;
-
     if let AstNode::Identifier(var_name) = &*lhs {
-        if let Some((offset, _)) = context.get_variable(var_name.as_str()) {
-            context.emit(&format!("sw {}, {}(s0)", rhs_reg, offset));
-            context.free_register(&rhs_reg);
+        if let Some((offset, lhs_type)) = context.get_variable(var_name.as_str()) {
+            // Get the type and register for the right-hand side
+            let rhs_type = get_expression_type(rhs, context)?;
+            let rhs_reg = generate_expression(rhs, context)?;
+            println!(
+                "Assigning to '{}' (type: {}) at offset {} with value (type: {}) in register {}",
+                var_name, lhs_type, offset, rhs_type, rhs_reg
+            );
+            // Handle assignment based on type combinations
+            match (lhs_type.as_str(), rhs_type.as_str()) {
+                ("int" | "char", "int" | "char") => {
+                    // Integer to integer assignment
+                    context.emit(&format!("sw {}, {}(s0)", rhs_reg, offset));
+                    context.free_register(&rhs_reg);
+                },
+                ("float", "float") => {
+                    // Float to float assignment
+                    if rhs_reg.starts_with('f') {
+                        context.emit(&format!("fsw {}, {}(s0)", rhs_reg, offset));
+                        context.free_fp_register(&rhs_reg);
+                    } else {
+                        return Err(CompileError::CodegenError(
+                            "Expected floating-point register for float assignment".to_string()
+                        ));
+                    }
+                },
+                ("double", "double") => {
+                    // Double to double assignment
+                    if rhs_reg.starts_with('f') {
+                        context.emit(&format!("fsd {}, {}(s0)", rhs_reg, offset));
+                        context.free_fp_register(&rhs_reg);
+                    } else {
+                        return Err(CompileError::CodegenError(
+                            "Expected floating-point register for double assignment".to_string()
+                        ));
+                    }
+                },
+                ("float", "int") => {
+                    // Integer to float conversion
+                    let fp_reg = context.get_fp_register();
+                    context.emit(&format!("fcvt.s.w {}, {}", fp_reg, rhs_reg));
+                    context.emit(&format!("fsw {}, {}(s0)", fp_reg, offset));
+                    context.free_register(&rhs_reg);
+                    context.free_fp_register(&fp_reg);
+                },
+                ("double", "int") => {
+                    // Integer to double conversion
+                    let fp_reg = context.get_fp_register();
+                    context.emit(&format!("fcvt.d.w {}, {}", fp_reg, rhs_reg));
+                    context.emit(&format!("fsd {}, {}(s0)", fp_reg, offset));
+                    context.free_register(&rhs_reg);
+                    context.free_fp_register(&fp_reg);
+                },
+                ("int", "float") => {
+                    // Float to integer conversion
+                    if rhs_reg.starts_with('f') {
+                        let int_reg = context.get_register();
+                        context.emit(&format!("fcvt.w.s {}, {}", int_reg, rhs_reg));
+                        context.emit(&format!("sw {}, {}(s0)", int_reg, offset));
+                        context.free_fp_register(&rhs_reg);
+                        context.free_register(&int_reg);
+                    } else {
+                        return Err(CompileError::CodegenError(
+                            "Expected floating-point register for float expression".to_string()
+                        ));
+                    }
+                },
+                _ => {
+                    return Err(CompileError::CodegenError(
+                        format!("Type mismatch in assignment: {} = {}", lhs_type, rhs_type)
+                    ));
+                }
+            }
             return Ok(());
         }
     }
@@ -230,13 +345,36 @@ fn generate_if_statement(node: &AstNode, context: &mut CodeGenContext) -> Result
 fn generate_return_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
     if let AstNode::ReturnStatement(expr) = node {
         if let Some(expr) = expr {
-            // Generate the expression and move result to a0
-            let reg = generate_expression(expr, context)?;
-            context.emit(&format!("    mv a0, {}", reg));
-            context.free_register(&reg);
+            let expr_type = get_expression_type(expr, context)?;
+            let result_reg = generate_expression(expr, context)?;
+
+            // Handle floating-point vs integer return values
+            if expr_type == "float" || expr_type == "double" {
+                if result_reg.starts_with('f') {
+                    // Already in floating-point register, move to fa0 if needed
+                    if result_reg != "fa0" {
+                        context.emit(&format!("    fmv.s fa0, {}", result_reg));
+                        context.free_fp_register(&result_reg);
+                    }
+                } else {
+                    // Integer register, convert to float in fa0
+                    context.emit(&format!("    fcvt.s.w fa0, {}", result_reg));
+                    context.free_register(&result_reg);
+                }
+            } else {
+                // Integer return, move to a0 if needed
+                if result_reg.starts_with('f') {
+                    // Floating-point register, convert to integer
+                    context.emit(&format!("    fcvt.w.s a0, {}", result_reg));
+                    context.free_fp_register(&result_reg);
+                } else if result_reg != "a0" {
+                    context.emit(&format!("    mv a0, {}", result_reg));
+                    context.free_register(&result_reg);
+                }
+            }
         }
 
-        // Generate epilogue
+        // Generate function epilogue
         context.generate_function_epilogue();
 
         Ok(())

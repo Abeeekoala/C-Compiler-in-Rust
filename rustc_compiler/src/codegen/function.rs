@@ -7,16 +7,19 @@ use crate::error::CompileError;
 /// Generate code for a function definition
 pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
     match node {
-        AstNode::FunctionDefinition { declarator, parameters, compound_statement, .. } => {
+        AstNode::FunctionDefinition { decl_specifiers, declarator, parameters, compound_statement } => {
             if let AstNode::Identifier(name) = &**declarator {
+                // Extract return type from decl_specifiers
+                let return_type_str = extract_return_type_from_decl_specifiers(decl_specifiers)?;
+
                 // Store function declaration before generating code
                 let param_types = parameters.iter()
                     .map(|p| match &**p {
-                        AstNode::Declaration { type_spec, .. } => type_spec.to_string(),
+                        AstNode::Declaration { type_spec, .. } => type_spec_to_string(type_spec),
                         _ => "unknown".to_string(),
                     })
                     .collect();
-                context.declare_function(name, param_types);
+                context.declare_function(name, return_type_str, param_types);
 
                 // Generate function prologue
                 context.emit(&format!(".globl {}", name));
@@ -27,30 +30,61 @@ pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result
                 context.enter_scope();
 
                 // Process parameters - add them to the symbol table
-                for (i, param) in parameters.iter().enumerate().take(8) {
+                let mut int_param_count = 0;
+                let mut float_param_count = 0;
+
+                for param in parameters.iter().take(16) { // Support up to 16 params (8 int + 8 float)
                     if let AstNode::Declaration { type_spec, declarator, .. } = &**param {
                         if let AstNode::Identifier(param_name) = &**declarator {
-                            // RISC-V convention: first 8 args in a0-a7
-                            let reg_name = format!("a{}", i);
+                            // Get parameter type as string
+                            let type_str = type_spec_to_string(type_spec);
+
+                            // Determine if parameter is floating-point
+                            let is_float = type_str == "float" || type_str == "double";
+
+                            // Get appropriate register based on type and parameter count
+                            let reg_name = if is_float {
+                                // Use float param count for fa registers
+                                if float_param_count >= 8 {
+                                    panic!("Too many float parameters");
+                                } else {
+                                    format!("fa{}", float_param_count)
+                                }
+                            } else {
+                                // Use int param count for a registers
+                                if int_param_count >= 8 {
+                                    panic!("Too many integer parameters");
+                                } else {
+                                    format!("a{}", int_param_count)
+                                }
+                            };
+
+                            // Increment the appropriate counter
+                            if is_float {
+                                float_param_count += 1;
+                            } else {
+                                int_param_count += 1;
+                            }
 
                             // Allocate space on stack for the parameter
-                            let stack_offset = context.allocate_stack_space(4); // Int size = 4 bytes
+                            let size = if type_str == "double" { 8 } else { 4 };
+                            let stack_offset = context.allocate_stack_space(size);
 
                             // Store argument from register to stack
-                            context.emit(&format!("    sw {}, {}(s0)", reg_name, stack_offset));
-
-                            // Get parameter type as string
-                            let type_str = match type_spec {
-                                crate::ast::TypeSpecifier::Int => "int".to_string(),
-                                crate::ast::TypeSpecifier::Char => "char".to_string(),
-                                crate::ast::TypeSpecifier::Void => "void".to_string(),
-                                _ => todo!(),
-                            };
+                            if is_float {
+                                if type_str == "double" {
+                                    context.emit(&format!("    fsd {}, {}(s0)", reg_name, stack_offset));
+                                } else {
+                                    context.emit(&format!("    fsw {}, {}(s0)", reg_name, stack_offset));
+                                }
+                            } else {
+                                context.emit(&format!("    sw {}, {}(s0)", reg_name, stack_offset));
+                            }
 
                             // Add to symbol table
                             let symbol = Symbol {
                                 location: StorageLocation::Stack(stack_offset),
-                                size: 4, // Assuming int
+                                size,
                                 type_info: type_str.clone(),
                                 dimensions: Vec::new(),
                             };
@@ -76,16 +110,19 @@ pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result
                 Err(CompileError::CodegenError("Expected function name".to_string()))
             }
         },
-        AstNode::FunctionDeclaration { declarator, parameters, .. } => {
+        AstNode::FunctionDeclaration { decl_specifiers, declarator, parameters } => {
             if let AstNode::Identifier(name) = &**declarator {
+                // Extract return type from decl_specifiers
+                let return_type_str = extract_return_type_from_decl_specifiers(decl_specifiers)?;
+
                 // Just store the declaration
                 let param_types = parameters.iter()
                     .map(|p| match &**p {
-                        AstNode::Declaration { type_spec, .. } => type_spec.to_string(),
+                        AstNode::Declaration { type_spec, .. } => type_spec_to_string(type_spec),
                         _ => "unknown".to_string(),
                     })
                     .collect();
-                context.declare_function(name, param_types);
+                context.declare_function(name, return_type_str, param_types);
                 Ok(())
             } else {
                 Err(CompileError::CodegenError("Expected function name".to_string()))
@@ -95,9 +132,33 @@ pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result
     }
 }
 
+/// Extract return type from declaration specifiers
+fn extract_return_type_from_decl_specifiers(decl_specifiers: &[Box<AstNode>]) -> Result<String, CompileError> {
+    // Find the TypeSpecifier node in the declaration specifiers
+    for spec in decl_specifiers {
+        if let AstNode::TypeSpecifier(type_spec) = &**spec {
+            return Ok(type_spec_to_string(type_spec));
+        }
+    }
+
+    // If we couldn't find a type specifier, default to "int" (C default)
+    Ok("int".to_string())
+}
+
+/// Convert TypeSpecifier to string
+fn type_spec_to_string(type_spec: &crate::ast::TypeSpecifier) -> String {
+    match type_spec {
+        crate::ast::TypeSpecifier::Int => "int".to_string(),
+        crate::ast::TypeSpecifier::Char => "char".to_string(),
+        crate::ast::TypeSpecifier::Float => "float".to_string(),
+        crate::ast::TypeSpecifier::Double => "double".to_string(),
+        crate::ast::TypeSpecifier::Void => "void".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
 
 /// Extract function parameters from a function declarator
-fn get_function_params(declarator: &AstNode) -> Option<Vec<(String, String)>> {
+pub fn get_function_params(declarator: &AstNode) -> Option<Vec<(String, String)>> {
     match declarator {
         AstNode::Identifier(_) => {
             // No parameters defined in simple identifier
@@ -113,12 +174,7 @@ fn get_function_params(declarator: &AstNode) -> Option<Vec<(String, String)>> {
                     if let AstNode::Declaration { type_spec, declarator, .. } = &**arg {
                         if let AstNode::Identifier(param_name) = &**declarator {
                             // Get parameter type as string
-                            let type_str = match type_spec {
-                                crate::ast::TypeSpecifier::Int => "int".to_string(),
-                                crate::ast::TypeSpecifier::Char => "char".to_string(),
-                                // Add other types as needed
-                                _ => "unknown".to_string(),
-                            };
+                            let type_str = type_spec_to_string(type_spec);
                             params.push((param_name.clone(), type_str));
                         }
                     }

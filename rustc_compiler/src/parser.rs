@@ -158,6 +158,8 @@ impl Parser {
                 Token::IntKw => Ok(TypeSpecifier::Int),
                 Token::VoidKw => Ok(TypeSpecifier::Void),
                 Token::CharKw => Ok(TypeSpecifier::Char),
+                Token::FloatKw => Ok(TypeSpecifier::Float),
+                Token::DoubleKw => Ok(TypeSpecifier::Double),
                 // Add other type specifiers as needed
                 _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token))),
             }
@@ -299,7 +301,7 @@ impl Parser {
             },
 
             // Declaration statements
-            Some(Token::IntKw) | Some(Token::CharKw) | Some(Token::VoidKw) => {
+            Some(Token::IntKw) | Some(Token::CharKw) | Some(Token::VoidKw) | Some(Token::FloatKw) | Some(Token::DoubleKw) => {
                 self.parse_declaration()
             },
 
@@ -915,10 +917,27 @@ impl Parser {
     /// Parse primary expression (literals, identifiers, and parenthesized expressions)
     fn parse_primary_expression(&mut self) -> ParseResult {
         match self.peek() {
-            Some(Token::IntLiteralDec((value, _))) => {
+            Some(Token::IntLiteralDec((value, _))) |
+            Some(Token::IntLiteralHex((value, _))) |
+            Some(Token::IntLiteralOct((value, _))) => {
                 let val = *value;
                 self.advance();
                 Ok(AstNode::IntConstant(val as i32))
+            },
+            Some(Token::IntLiteralChar(value)) => {
+                let val = *value;
+                self.advance();
+                Ok(AstNode::IntConstant(val as i32))
+            },
+            Some(Token::FloatLiteral((value, _suffix))) => {
+                let val = *value;
+                self.advance();
+                Ok(AstNode::FloatConstant(val))
+            },
+            Some(Token::StringLiteral(s)) => {
+                let string = s.clone();
+                self.advance();
+                Ok(AstNode::StringLiteral(string))
             },
             Some(Token::Identifier(name)) => {
                 let id = name.clone();
@@ -1019,6 +1038,14 @@ impl Parser {
             Token::VoidKw => {
                 self.advance();
                 Ok(TypeSpecifier::Void)
+            },
+            Token::FloatKw =>{
+                self.advance();
+                Ok(TypeSpecifier::Float)
+            },
+            Token::DoubleKw => {
+                self.advance();
+                Ok(TypeSpecifier::Double)
             },
             _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token)))
         }
