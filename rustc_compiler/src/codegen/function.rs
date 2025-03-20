@@ -153,6 +153,7 @@ fn type_spec_to_string(type_spec: &crate::ast::TypeSpecifier) -> String {
         crate::ast::TypeSpecifier::Float => "float".to_string(),
         crate::ast::TypeSpecifier::Double => "double".to_string(),
         crate::ast::TypeSpecifier::Void => "void".to_string(),
+        crate::ast::TypeSpecifier::Struct(name) => format!("struct {}", name),
         _ => "unknown".to_string(),
     }
 }

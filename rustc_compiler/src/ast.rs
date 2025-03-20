@@ -141,7 +141,16 @@ pub enum AstNode {
         declarator: Box<AstNode>,
         initializer: Option<Box<AstNode>>,
     },
-
+    /// Struct definition
+    StructDefinition {
+        name: String,
+        fields: Vec<Box<AstNode>>,
+    },
+    /// Struct field
+    StructField {
+        type_spec: TypeSpecifier,
+        name: String,
+    },
 }
 
 /// Binary operators
@@ -177,6 +186,7 @@ pub enum TypeSpecifier {
     Long,
     Float,
     Double,
+    Struct(String),
 }
 
 // Implement Display for TypeSpecifier
@@ -190,6 +200,7 @@ impl fmt::Display for TypeSpecifier {
             TypeSpecifier::Long => write!(f, "long"),
             TypeSpecifier::Float => write!(f, "float"),
             TypeSpecifier::Double => write!(f, "double"),
+            TypeSpecifier::Struct(name) => write!(f, "struct {}", name),
         }
     }
 }

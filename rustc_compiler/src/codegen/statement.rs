@@ -1,10 +1,12 @@
 use crate::ast::AstNode;
+use crate::ast::TypeSpecifier;
 use crate::codegen::context::CodeGenContext;
 use crate::codegen::expression::generate_expression;
 use crate::error::CompileError;
 use crate::ast::SwitchCase;
 use crate::codegen::context::StorageLocation;
 use crate::codegen::expression::get_expression_type;
+use crate::codegen::expression;
 
 /// Generate code for a statement
 pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
@@ -40,94 +42,7 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
         AstNode::ExpressionStatement(_) => generate_expression_statement(node, context),
         AstNode::UnaryOperation { op, operand } => generate_unary_operation(op, operand, context),
         AstNode::Declaration { type_spec, declarator, initializer } => {
-            match &**declarator {
-                AstNode::Identifier(name) => {
-                    // Get type size
-                    let size = match type_spec {
-                        crate::ast::TypeSpecifier::Double => 8,
-                        _ => 4, // int, float, char all use 4 bytes
-                    };
-
-                    // Get type string
-                    let type_str = match type_spec {
-                        crate::ast::TypeSpecifier::Int => "int".to_string(),
-                        crate::ast::TypeSpecifier::Char => "char".to_string(),
-                        crate::ast::TypeSpecifier::Float => "float".to_string(),
-                        crate::ast::TypeSpecifier::Double => "double".to_string(),
-                        crate::ast::TypeSpecifier::Void => "void".to_string(),
-                        _ => todo!(),
-                    };
-
-                    // Allocate space
-                    let stack_offset = context.add_variable(name.to_string(), type_str.clone());
-
-                    // Handle initializer
-                    if let Some(init_expr) = initializer {
-                        if context.in_function {
-                            // Local variable initialization
-                            let reg = generate_expression(init_expr, context)?;
-
-                            // Store based on type
-                            if type_str == "float" && reg.starts_with('f') {
-                                context.emit(&format!("    fsw {}, {}(s0)", reg, stack_offset));
-                                context.free_fp_register(&reg);
-                            } else if type_str == "double" && reg.starts_with('f') {
-                                context.emit(&format!("    fsd {}, {}(s0)", reg, stack_offset));
-                                context.free_fp_register(&reg);
-                            } else if (type_str == "float" || type_str == "double") && !reg.starts_with('f') {
-                                // Integer result needs conversion
-                                let fp_reg = context.get_fp_register();
-                                context.emit(&format!("    fcvt.s.w {}, {}", fp_reg, reg));
-                                context.emit(&format!("    fsw {}, {}(s0)", fp_reg, stack_offset));
-                                context.free_register(&reg);
-                                context.free_fp_register(&fp_reg);
-                            } else {
-                                // Regular integer
-                                context.emit(&format!("    sw {}, {}(s0)", reg, stack_offset));
-                                context.free_register(&reg);
-                            }
-                        } else {
-                            // Global variable initialization
-                            if type_str == "float" || type_str == "double" {
-                                if let AstNode::FloatConstant(value) = &**init_expr {
-                                    // For floating-point, we need to emit the binary representation
-                                    let float_bits = f32::to_bits(*value as f32);
-                                    context.initialize_global_variable_raw(name.to_string(), float_bits);
-                                } else {
-                                    return Err(CompileError::CodegenError(
-                                        "Global floating-point variable initializer must be a constant".to_string()
-                                    ));
-                                }
-                            } else if let AstNode::IntConstant(value) = &**init_expr {
-                                context.initialize_global_variable(name.to_string(), *value);
-                            } else {
-                                return Err(CompileError::CodegenError(
-                                    "Global variable initializer must be a constant".to_string()
-                                ));
-                            }
-                        }
-                    }
-                    Ok(())
-                },
-                AstNode::ArrayDeclarator { base, size } => {
-                    let (name, dimensions) = extract_array_declarator(declarator)?;
-                    let offset = context.add_array(name.to_string(), type_spec.to_string(), dimensions.clone());
-                    // Initializers for arrays can be added later if needed
-                    if let Some(init) = initializer {
-                        match &**init {
-                            AstNode::InitializerList(elements) => {
-                                // Initialize array with initializer list
-                                initialize_array(name.as_str(), &dimensions, elements, offset, context)?;
-                            },
-                            _ => {
-                                return Err(CompileError::CodegenError("Array initializer must be an initializer list".to_string()));
-                            }
-                        }
-                    }
-                    Ok(())
-                },
-                _ => Err(CompileError::CodegenError("Unsupported declarator type".to_string())),
-            }
+            generate_declaration_item(node, context)
         },
         AstNode::FunctionDeclaration { .. } => {
             // Function declarations are just prototypes and don't generate code
@@ -401,25 +316,96 @@ fn generate_expression_statement(node: &AstNode, context: &mut CodeGenContext) -
 }
 
 fn generate_declaration_item(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
-    if let AstNode::VariableDeclaration { declarator, initializer, .. } = node {
-        if let AstNode::Identifier(name) = &**declarator {
-            // Allocate space for the variable
-            // Pass a String for the name and "int" as the type name
-            let offset = context.add_variable(name.to_string(), "int".to_string());
+    match node {
+        AstNode::Declaration { type_spec, declarator, initializer } => {
+            match &**declarator {
+                AstNode::Identifier(name) => {
+                    match type_spec {
+                        TypeSpecifier::Struct(struct_name) => {
+                            context.add_struct_variable(name.clone(), struct_name.clone());
+                            if initializer.is_some() {
+                                return Err(CompileError::CodegenError("Struct initializers not yet supported".to_string()));
+                            }
+                        },
+                        _ => {
+                            let offset = context.add_variable(name.clone(), type_spec_to_string(type_spec));
+                            if let Some(init) = initializer {
+                                if context.in_function {
+                                    let reg = expression::generate_expression(init, context)?;
 
-            // Initialize if an initializer is present
-            if let Some(init_expr) = initializer {
-                let reg = generate_expression(init_expr, context)?;
-                context.emit(&format!("    sw {}, {}(s0)", reg, offset));
-                context.free_register(&reg);
+                                    match type_spec {
+                                        TypeSpecifier::Float => {
+                                            context.emit(&format!("    fsw {}, {}(s0)", reg, offset));
+
+                                            if reg.starts_with('f') {
+                                                context.free_fp_register(&reg);
+                                            }
+                                        }
+                                        TypeSpecifier::Double => {
+                                            context.emit(&format!("    fsd {}, {}(s0)", reg, offset));
+                                            if reg.starts_with('f') {
+                                                context.free_fp_register(&reg);
+                                            }
+                                        }
+                                        _ => {
+                                            context.emit(&format!("    sw {}, {}(s0)", reg, offset));
+                                            context.free_register(&reg);
+                                        }
+                                    }
+                                } else {
+                                    if let AstNode::IntConstant(value) = &**init {
+                                        context.initialize_global_variable(name.clone(), *value);
+                                    } else if let AstNode::FloatConstant(value) = &**init {
+                                        let float_bits = f32::to_bits(*value as f32);
+                                        context.initialize_global_variable_raw(name.clone(), float_bits);
+                                    } else {
+                                        return Err(CompileError::CodegenError("Global variable initializer must be a constant".to_string()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+                AstNode::ArrayDeclarator { .. } => {
+                    extract_array_declarator(declarator).and_then(|(name, dimensions)| {
+                        let size = context.add_array(name.clone(), type_spec_to_string(type_spec), dimensions.clone());
+
+                        if let Some(init) = initializer {
+                            if let AstNode::InitializerList(elements) = &**init {
+                                match &dimensions[..] {
+                                    [dim_size] => {
+                                        initialize_array(&name, &dimensions, elements, size, context)?;
+                                    }
+                                    _ => {
+                                        initialize_array(&name, &dimensions, elements, size, context)?;
+                                    }
+                                }
+                            } else {
+                                return Err(CompileError::CodegenError("Expected initializer list for array".to_string()));
+                            }
+                        }
+
+                        Ok(())
+                    })
+
+                },
+                _ => Err(CompileError::CodegenError("Expected identifier or array declarator".to_string())),
             }
+        },
+        _ => Err(CompileError::CodegenError("Expected declaration".to_string())),
+    }
+}
 
-            Ok(())
-        } else {
-            Err(CompileError::CodegenError("Expected identifier in variable declaration".to_string()))
-        }
-    } else {
-        Err(CompileError::CodegenError("Expected variable declaration".to_string()))
+fn type_spec_to_string(type_spec: &TypeSpecifier) -> String {
+    match type_spec {
+        TypeSpecifier::Int => "int".to_string(),
+        TypeSpecifier::Char => "char".to_string(),
+        TypeSpecifier::Float => "float".to_string(),
+        TypeSpecifier::Double => "double".to_string(),
+        TypeSpecifier::Void => "void".to_string(),
+        TypeSpecifier::Struct(name) => format!("struct {}", name),
+        _ => "unknown".to_string(),
     }
 }
 

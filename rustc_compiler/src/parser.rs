@@ -59,8 +59,27 @@ impl Parser {
     fn parse_external_declaration(&mut self) -> ParseResult {
         let start_pos = self.current;
 
-        let type_spec = self.parse_declaration_specifiers()?;
+        // Struct parsing
+        if let Some(Token::StructKw) = self.peek() {
+            self.advance();
+            let struct_name = self.parse_identifier()?;
+            if let Some(Token::LBrace) = self.peek() {
+                self.advance();
+                let fields = self.parse_struct_fields()?;
+                self.expect_token(Token::RBrace)?;
+                self.expect_token(Token::Semicolon)?;
 
+                return Ok(AstNode::StructDefinition {
+                    name: struct_name,
+                    fields,
+                });
+            } else {
+                self.current = start_pos;
+            }
+        }
+
+        // If not a struct definition, parse as function or variable as you go back to that point upon failing struct parsing
+        let type_spec = self.parse_declaration_specifiers()?;
         let identifier = self.parse_identifier()?;
 
         if let Some(Token::LParen) = self.peek() {
@@ -135,18 +154,72 @@ impl Parser {
 
     /// Parse declaration specifiers
     fn parse_declaration_specifiers(&mut self) -> Result<TypeSpecifier, CompileError> {
-        if let Some(token) = self.advance() {
-            match token {
-                Token::IntKw => Ok(TypeSpecifier::Int),
-                Token::VoidKw => Ok(TypeSpecifier::Void),
-                Token::CharKw => Ok(TypeSpecifier::Char),
-                Token::FloatKw => Ok(TypeSpecifier::Float),
-                Token::DoubleKw => Ok(TypeSpecifier::Double), // Expand as required
-                _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token))),
-            }
-        } else {
-            Err(CompileError::ParserError("Unexpected end of file".to_string()))
+        let token = self.peek().ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?;
+
+        match token {
+            Token::IntKw => {
+                self.advance();
+                Ok(TypeSpecifier::Int)
+            },
+            Token::CharKw => {
+                self.advance();
+                Ok(TypeSpecifier::Char)
+            },
+            Token::VoidKw => {
+                self.advance();
+                Ok(TypeSpecifier::Void)
+            },
+            Token::FloatKw =>{
+                self.advance();
+                Ok(TypeSpecifier::Float)
+            },
+            Token::DoubleKw => {
+                self.advance();
+                Ok(TypeSpecifier::Double)
+            },
+            Token::StructKw => {
+                self.advance();
+                if let Some(Token::Identifier(name)) = self.peek() {
+                    let struct_name = name.clone();
+                    self.advance();
+                    if let Some(Token::LBrace) = self.peek() {
+                        self.advance();
+                        let fields = self.parse_struct_fields()?;
+                        self.expect_token(Token::RBrace)?;
+
+                        return Ok(TypeSpecifier::Struct(struct_name));
+                    } else {
+                        return Ok(TypeSpecifier::Struct(struct_name));
+                    }
+                } else {
+                    return Err(CompileError::ParserError("Expected identifier after 'struct'".to_string()));
+                }
+            },
+            _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token)))
         }
+    }
+
+    /// Parsing fields inside teh struct
+    fn parse_struct_fields(&mut self) -> Result<Vec<Box<AstNode>>, CompileError> {
+        let mut fields = Vec::new();
+
+        while let Some(token) = self.peek() {
+            if *token == Token::RBrace {
+                break;
+            }
+
+            let field_type = self.parse_type_specifier()?;
+            let field_name = self.parse_identifier()?;
+            let field_node = AstNode::StructField {
+                type_spec: field_type,
+                name: field_name,
+            };
+
+            fields.push(Box::new(field_node));
+            self.expect_token(Token::Semicolon)?;
+        }
+
+        Ok(fields)
     }
 
     pub fn parse_initializer(&mut self) -> ParseResult {
@@ -250,48 +323,84 @@ impl Parser {
     /// Parse a statement
     pub fn parse_statement(&mut self) -> Result<AstNode, CompileError> {
         match self.peek() {
-            // Empty statement (just a semicolon)
             Some(Token::Semicolon) => {
                 self.advance();
-                Ok(AstNode::ExpressionStatement(Box::new(AstNode::NodeList(Vec::new()))))
+                Ok(AstNode::Empty)
             },
-            // Declaration statements
-            Some(Token::IntKw) | Some(Token::CharKw) | Some(Token::VoidKw) | Some(Token::FloatKw) | Some(Token::DoubleKw) => {
-                self.parse_declaration()
+            Some(Token::LBrace) => {
+                self.parse_compound_statement()
             },
-            // Compound statements
-            Some(Token::LBrace) => self.parse_compound_statement(),
-            // If statements
-            Some(Token::IfKw) => self.parse_if_statement(),
-            // Return statements
-            Some(Token::ReturnKw) => self.parse_return_statement(),
-            // While statements
-            Some(Token::WhileKw) => self.parse_while_statement(),
-            // For statements
-            Some(Token::ForKw) => self.parse_for_statement(),
-            // Switch statements
-            Some(Token::SwitchKw) => self.parse_switch_statement(),
-            // Breaks
+            Some(Token::IfKw) => {
+                self.parse_if_statement()
+            },
+            Some(Token::WhileKw) => {
+                self.parse_while_statement()
+            },
+            Some(Token::ForKw) => {
+                self.parse_for_statement()
+            },
+            Some(Token::ReturnKw) => {
+                self.parse_return_statement()
+            },
             Some(Token::BreakKw) => {
                 self.advance();
                 self.expect_token(Token::Semicolon)?;
                 Ok(AstNode::BreakStatement)
             },
-            // Continues
             Some(Token::ContinueKw) => {
                 self.advance();
                 self.expect_token(Token::Semicolon)?;
                 Ok(AstNode::ContinueStatement)
             },
-            _ => {
-                let expr = self.parse_expression()?;
-                // Expect ';'
-                if let Some(Token::Semicolon) = self.peek() {
+            Some(Token::SwitchKw) => {
+                self.parse_switch_statement()
+            },
+            // Type specifiers - this could be a declaration
+            Some(Token::IntKw) | Some(Token::FloatKw) | Some(Token::CharKw) |
+            Some(Token::DoubleKw) | Some(Token::VoidKw) => {
+                self.parse_declaration()
+            },
+            // Handle struct declaration within function
+            Some(Token::StructKw) => {
+                self.advance();
+
+                if let Some(Token::Identifier(struct_name)) = self.peek() {
+                    let struct_type = struct_name.clone();
                     self.advance();
-                    Ok(AstNode::ExpressionStatement(Box::new(expr)))
+
+                    if let Some(Token::LBrace) = self.peek() {
+                        self.advance();
+                        let fields = self.parse_struct_fields()?;
+                        self.expect_token(Token::RBrace)?;
+                        self.expect_token(Token::Semicolon)?;
+
+                        Ok(AstNode::StructDefinition {
+                            name: struct_type,
+                            fields,
+                        })
+                    } else {
+                        if let Some(Token::Identifier(var_name)) = self.peek() {
+                            let variable_name = var_name.clone();
+                            self.advance();
+                            let initializer = None;
+                            self.expect_token(Token::Semicolon)?;
+
+                            Ok(AstNode::Declaration {
+                                type_spec: TypeSpecifier::Struct(struct_type),
+                                declarator: Box::new(AstNode::Identifier(variable_name)),
+                                initializer,
+                            })
+                        } else {
+                            Err(CompileError::ParserError("Expected identifier after struct type".to_string()))
+                        }
+                    }
                 } else {
-                    Err(CompileError::ParserError("Expected ';' after statement".to_string()))
+                    Err(CompileError::ParserError("Expected struct name".to_string()))
                 }
+            },
+            _ => {
+                // If it fails just send it back
+                self.parse_expression_statement()
             }
         }
     }
@@ -1018,6 +1127,24 @@ impl Parser {
                 self.advance();
                 Ok(TypeSpecifier::Double)
             },
+            Token::StructKw => {
+                self.advance();
+                if let Some(Token::Identifier(name)) = self.peek() {
+                    let struct_name = name.clone();
+                    self.advance();
+                    if let Some(Token::LBrace) = self.peek() {
+                        self.advance();
+                        let fields = self.parse_struct_fields()?;
+                        self.expect_token(Token::RBrace)?;
+                        return Ok(TypeSpecifier::Struct(struct_name));
+                    } else {
+                        // Just the type reference upon failure
+                        return Ok(TypeSpecifier::Struct(struct_name));
+                    }
+                } else {
+                    return Err(CompileError::ParserError("Expected identifier after 'struct'".to_string()));
+                }
+            },
             _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token)))
         }
     }
@@ -1042,9 +1169,8 @@ impl Parser {
             return Ok(params);
         }
         params.push(Box::new(self.parse_parameter_declaration()?));
-
         while let Some(Token::Comma) = self.peek() {
-            self.advance(); // Consume the comma
+            self.advance();
             params.push(Box::new(self.parse_parameter_declaration()?));
         }
 

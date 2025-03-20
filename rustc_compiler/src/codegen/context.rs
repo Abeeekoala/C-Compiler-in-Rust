@@ -24,6 +24,21 @@ pub struct Symbol {
     pub dimensions: Vec<usize>,
 }
 
+/// Definition of a struct
+#[derive(Debug, Clone)]
+pub struct StructDefinition {
+    pub fields: HashMap<String, FieldInfo>,
+    pub total_size: usize,
+}
+
+/// Struct fields
+#[derive(Debug, Clone)]
+pub struct FieldInfo {
+    pub offset: usize,
+    pub type_info: String,
+    pub size: usize,
+}
+
 /// Manages the compilation context
 #[derive(Debug)]
 pub struct CodeGenContext {
@@ -53,6 +68,8 @@ pub struct CodeGenContext {
 
     /// Map of function names to their return types
     pub function_signatures: HashMap<String, String>,
+
+    pub struct_definitions: HashMap<String, StructDefinition>,
 }
 
 impl CodeGenContext {
@@ -83,6 +100,7 @@ impl CodeGenContext {
             break_labels: Vec::new(),
             continue_labels: Vec::new(),
             function_signatures: HashMap::new(),
+            struct_definitions: HashMap::new(),
         }
     }
 
@@ -468,10 +486,7 @@ impl CodeGenContext {
 
     /// Initialize a global variable with a value
     pub fn initialize_global_variable(&mut self, name: String, value: i32) {
-        // Update data section to include initialization value
-        let mut data_lines: Vec<String> = self.data_section.lines()
-                                               .map(String::from)
-                                               .collect();
+        let mut data_lines: Vec<String> = self.data_section.lines().map(String::from).collect();
 
         let mut i = 0;
         let var_declaration = format!("{}:", name);
@@ -524,20 +539,46 @@ impl CodeGenContext {
         self.function_signatures.get(name).cloned()
     }
 
-    // /// Register common standard library functions with their return types
-    // pub fn register_standard_functions(&mut self) {
-    //     // C standard library functions
-    //     self.register_function("printf", "int".to_string());
-    //     self.register_function("scanf", "int".to_string());
-    //     self.register_function("malloc", "void*".to_string());
-    //     self.register_function("free", "void".to_string());
+    /// Initailising that struct
+    pub fn register_struct(&mut self, name: String, fields: Vec<(String, String, usize)>) -> usize {
+        let mut struct_fields = HashMap::new();
+        let mut current_offset = 0;
 
-    //     // Math functions
-    //     self.register_function("sqrt", "float".to_string());
-    //     self.register_function("sin", "float".to_string());
-    //     self.register_function("cos", "float".to_string());
-    //     self.register_function("tan", "float".to_string());
+        for (field_name, field_type, field_size) in fields {
+            current_offset = (current_offset + 3) & !3;
+            struct_fields.insert(field_name, FieldInfo {
+                offset: current_offset,
+                type_info: field_type,
+                size: field_size,
+            });
+            current_offset += field_size;
+        }
+        let total_size = (current_offset + 3) & !3;
+        self.struct_definitions.insert(name, StructDefinition {
+            fields: struct_fields,
+            total_size,
+        });
 
-    //     // Add more library functions as needed
-    // }
+        total_size
+    }
+
+    /// Size of struct implementor
+    pub fn get_struct_size(&self, struct_name: &str) -> Option<usize> {
+        self.struct_definitions.get(struct_name).map(|def| def.total_size)
+    }
+
+    /// Adding the struct variable to the symbol table
+    pub fn add_struct_variable(&mut self, var_name: String, struct_name: String) -> i32 {
+        let struct_size = self.get_struct_size(&struct_name).unwrap_or(4);
+        self.stack_offset -= struct_size as i32;
+        let offset = self.stack_offset;
+        self.symbols.last_mut().unwrap().insert(var_name, Symbol {
+            location: StorageLocation::Stack(offset),
+            size: struct_size,
+            type_info: format!("struct {}", struct_name),
+            dimensions: Vec::new(),
+        });
+
+        offset
+    }
 }
