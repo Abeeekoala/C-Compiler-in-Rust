@@ -256,30 +256,40 @@ impl Parser {
 
     /// Parse a declarator
     fn parse_declarator(&mut self) -> ParseResult {
-        if let Some(Token::Identifier(name)) = self.advance() {
-            let id_node = AstNode::Identifier(name.clone());
-
-            if let Some(Token::LParen) = self.peek() {
-                self.advance();
-                let params = self.parse_parameter_list()?;
-                self.expect_token(Token::RParen)?;
-
-                return Ok(AstNode::FunctionCall {
-                    function: Box::new(id_node),
-                    args: params,
-                });
-            }
-
-            return Ok(id_node);
+        let mut pointers = 0;
+        // Count the number of pointer levels
+        while let Some(Token::Mul) = self.peek() {
+            self.advance(); // Consume '*'
+            pointers += 1;
         }
 
-        Err(CompileError::ParserError("Expected identifier in declarator".to_string()))
+        let identifier = self.parse_identifier()?;
+        let mut declarator = AstNode::Identifier(identifier);
+
+        while let Some(Token::LBracket) = self.peek() {
+            self.advance();
+            let size = self.parse_expression()?;
+            self.expect_token(Token::RBracket)?;
+            declarator = AstNode::ArrayDeclarator {
+                base: Box::new(declarator),
+                size: Box::new(size),
+            };
+        }
+
+        // Wrap the declarator in PointerDeclarator nodes for each '*'
+        let mut result = declarator;
+        for _ in 0..pointers {
+            result = AstNode::PointerDeclarator {
+                pointee: Box::new(result),
+            };
+        }
+
+        Ok(result)
     }
 
     pub fn parse_declaration(&mut self) -> ParseResult {
         let type_specifier = self.parse_type_specifier()?;
-        let identifier = self.parse_identifier()?;
-        let mut declarator = AstNode::Identifier(identifier);
+        let mut declarator = self.parse_declarator()?;
 
         while let Some(Token::LBracket) = self.peek() {
             self.advance();
@@ -1159,8 +1169,22 @@ impl Parser {
     /// Parse a function parameter declarator
     fn parse_parameter_declaration(&mut self) -> Result<AstNode, CompileError> {
         let type_specifier = self.parse_type_specifier()?;
+
+        // Check for pointer type
+        let mut is_pointer = false;
+        if let Some(Token::Mul) = self.peek() {
+            self.advance(); // Consume '*'
+            is_pointer = true;
+        }
+
         let identifier = self.parse_identifier()?;
-        let declarator = Box::new(AstNode::Identifier(identifier));
+        let mut declarator = Box::new(AstNode::Identifier(identifier));
+
+        if is_pointer {
+            declarator = Box::new(AstNode::PointerDeclarator {
+                pointee: declarator,
+            });
+        }
 
         Ok(AstNode::Declaration {
             type_spec: type_specifier,

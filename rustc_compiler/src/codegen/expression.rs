@@ -67,6 +67,14 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 AstNode::Identifier(name) => {
                     // Get LHS variable info (offset and type)
                     if let Some((offset, lhs_type)) = context.get_variable(name) {
+                        // Add special handling for pointer assignment
+                        if lhs_type.ends_with('*') && rhs_type.ends_with('*') {
+                            // Pointer to pointer assignment is allowed
+                            // (as long as they're compatible, which we'll simplify here)
+                            context.emit(&format!("    sw {}, {}(s0)", rhs_reg, offset));
+                            return Ok(rhs_reg);
+                        }
+
                         match (lhs_type.as_str(), rhs_type.as_str()) {
                             ("int", "int") => {
                                 // Integer to integer: use sw
@@ -241,10 +249,63 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                     context.free_register(&addr_reg);
                     return Ok(rhs_reg);
                 },
+                AstNode::UnaryOperation { op, operand } if op == "*" => {
+                    match &**operand {
+                        AstNode::Identifier(name) => {
+                            if let Some((offset, lhs_type)) = context.get_variable(name) {
+                                // Check if lhs_type is a pointer (e.g., "int*")
+                                if lhs_type.ends_with('*') {
+                                    // Extract the type pointed to (e.g., "int" from "int*")
+                                    let target_type = lhs_type.trim_end_matches('*');
+
+                                    // Load the pointer value (address) into a register
+                                    let addr_reg = context.get_register();
+                                    context.emit(&format!("    lw {}, {}(s0)", addr_reg, offset));
+
+                                    // Match the target type with RHS type and store accordingly
+                                    match (target_type, rhs_type.as_str()) {
+                                        ("int", "int") => {
+                                            context.emit(&format!("    sw {}, 0({})", rhs_reg, addr_reg));
+                                        },
+                                        ("float", "float") => {
+                                            if rhs_reg.starts_with('f') {
+                                                context.emit(&format!("    fsw {}, 0({})", rhs_reg, addr_reg));
+                                            } else {
+                                                return Err(CompileError::CodegenError(
+                                                    "Expected floating-point register for float assignment".to_string()
+                                                ));
+                                            }
+                                        },
+                                        ("double", "double") => {
+                                            context.emit(&format!("    fsd {}, 0({})", rhs_reg, addr_reg));
+                                        },
+                                        _ => {
+                                            context.free_register(&addr_reg);
+                                            return Err(CompileError::CodegenError(
+                                                format!("Type mismatch in dereference assignment: *{} = {}", lhs_type, rhs_type)
+                                            ));
+                                        }
+                                    }
+                                    context.free_register(&addr_reg);
+                                    return Ok(rhs_reg);
+                                } else {
+                                    return Err(CompileError::CodegenError(
+                                        format!("Variable '{}' is not a pointer for dereference", name)
+                                    ));
+                                }
+                            } else {
+                                return Err(CompileError::CodegenError(format!("Variable '{}' not found", name)));
+                            }
+                        },
+                        _ => return Err(CompileError::CodegenError(
+                            "Dereference operator can only be applied to identifiers".to_string()
+                        )),
+                    }
+                },
                 _ => {},
             }
             // This error will be reached if none of the return statements above were executed
-            Err(CompileError::CodegenError("Invalid assignment target".to_string()))
+            Err(CompileError::CodegenError(format!("Invalid assignment target attempt to assign {} from register {}", rhs_type, rhs_reg)))
         },
         AstNode::IntegerLiteral(value) => generate_int_constant(*value, context),
         AstNode::BinaryOperation { op, left, right } => {
@@ -340,6 +401,15 @@ fn generate_binary_operation(
         return generate_logical_operation(op, left, right, context);
     }
 
+    // Get types of operands first to check for pointer arithmetic
+    let left_type = get_expression_type(left, context)?;
+    let right_type = get_expression_type(right, context)?;
+
+    // Handle pointer arithmetic
+    if (op == "+" || op == "-") && (left_type.ends_with('*') || right_type.ends_with('*')) {
+        return generate_pointer_arithmetic(op, left, right, left_type, right_type, context);
+    }
+
     // Generate code for operands
     let left_reg = generate_expression(left, context)?;
     let right_reg = generate_expression(right, context)?;
@@ -421,6 +491,84 @@ fn generate_binary_operation(
 
     // Free the right register since the result is in the left register
     context.free_register(&right_reg);
+
+    Ok(result_reg)
+}
+
+/// Generate code for pointer arithmetic operations
+fn generate_pointer_arithmetic(
+    op: &str,
+    left: &AstNode,
+    right: &AstNode,
+    left_type: String,
+    right_type: String,
+    context: &mut CodeGenContext
+) -> Result<String, CompileError> {
+    // Generate code for both operands
+    let left_reg = generate_expression(left, context)?;
+    let right_reg = generate_expression(right, context)?;
+
+    // Determine which operand is the pointer and which is the integer
+    let (ptr_reg, int_reg, ptr_type, is_left_ptr) = if left_type.ends_with('*') {
+        (left_reg.clone(), right_reg.clone(), left_type.trim_end_matches('*').to_string(), true)
+    } else {
+        (right_reg.clone(), left_reg.clone(), right_type.trim_end_matches('*').to_string(), false)
+    };
+
+    // Get element size based on the pointer type
+    let element_size = match ptr_type.as_str() {
+        "char" => 1,
+        "short" => 2,
+        "int" | "float" => 4,
+        "double" => 8,
+        _ => 4, // Default to 4 bytes for unknown types
+    };
+
+    let result_reg = if op == "+" || (op == "-" && is_left_ptr) {
+        // For ptr + int or ptr - int
+        let scaled_reg = context.get_register();
+
+        if element_size == 1 {
+            context.emit(&format!("    mv {}, {}", scaled_reg, int_reg));
+        } else {
+            // Scale the integer by element size
+            context.emit(&format!("    li {}, {}", scaled_reg, element_size));
+            context.emit(&format!("    mul {}, {}, {}", scaled_reg, int_reg, scaled_reg));
+        }
+
+        if op == "+" {
+            context.emit(&format!("    add {}, {}, {}", ptr_reg, ptr_reg, scaled_reg));
+        } else { // op == "-" && is_left_ptr
+            context.emit(&format!("    sub {}, {}, {}", ptr_reg, ptr_reg, scaled_reg));
+        }
+
+        context.free_register(&scaled_reg);
+        context.free_register(&int_reg);
+        ptr_reg
+    } else if op == "-" && left_type.ends_with('*') && right_type.ends_with('*') {
+        // For ptr - ptr (difference between two pointers)
+        let result_reg = context.get_register();
+
+        // Calculate (left - right)
+        context.emit(&format!("    sub {}, {}, {}", result_reg, left_reg, right_reg));
+
+        // Divide by element size to get the count of elements
+        if element_size > 1 {
+            let size_reg = context.get_register();
+            context.emit(&format!("    li {}, {}", size_reg, element_size));
+            context.emit(&format!("    div {}, {}, {}", result_reg, result_reg, size_reg));
+            context.free_register(&size_reg);
+        }
+
+        context.free_register(&left_reg);
+        context.free_register(&right_reg);
+        result_reg
+    } else {
+        // This shouldn't happen based on our checks, but just in case
+        return Err(CompileError::CodegenError(
+            format!("Invalid pointer arithmetic: {} {} {}", left_type, op, right_type)
+        ));
+    };
 
     Ok(result_reg)
 }
@@ -998,15 +1146,17 @@ fn calculate_array_element_address(
     context: &mut CodeGenContext,
 ) -> Result<String, CompileError> {
     // data from the symbol (immutable borrow)
-    let (base_offset, dimensions, is_global, global_label) = {
+    let (base_offset, dimensions, is_global, global_label, is_pointer, type_info) = {
         if let Some(symbol) = context.lookup_symbol(array_name) {
             match &symbol.location {
                 StorageLocation::Stack(offset) => {
-                    // Clone the dimensions
-                    (*offset, symbol.dimensions.clone(), false, String::new())
+                    // Clone the dimensions and check if it's a pointer
+                    (*offset, symbol.dimensions.clone(), false, String::new(),
+                     symbol.is_pointer, symbol.type_info.clone())
                 },
                 StorageLocation::Global(label) => {
-                    (0, symbol.dimensions.clone(), true, label.clone())
+                    (0, symbol.dimensions.clone(), true, label.clone(),
+                     symbol.is_pointer, symbol.type_info.clone())
                 },
                 _ => {
                     return Err(CompileError::CodegenError("Array has invalid storage type".to_string()));
@@ -1017,6 +1167,51 @@ fn calculate_array_element_address(
         }
     };
 
+    println!("Array/pointer access: name={}, is_pointer={}, type={}",
+             array_name, is_pointer, type_info);
+
+    // For pointers, we only need one index and we don't check dimensions
+    if is_pointer {
+        if indices.len() != 1 {
+            return Err(CompileError::CodegenError(format!(
+                "Expected 1 index for pointer '{}', got {}", array_name, indices.len()
+            )));
+        }
+
+        // Generate code for the index expression
+        let index_reg = generate_expression(&indices[0], context)?;
+
+        // Calculate element size based on the pointer type
+        let element_size = if type_info.contains("double") { 8 } else { 4 };
+
+        // Compute address: pointer_value + index * element_size
+        let addr_reg = context.get_register();
+
+        // Scale the index by element size
+        context.emit(&format!("    slli {0}, {1}, {2}",
+                             addr_reg, index_reg,
+                             if element_size == 8 { 3 } else { 2 })); // *4 or *8
+
+        // Load the pointer value
+        let ptr_reg = context.get_register();
+        if is_global {
+            context.emit(&format!("    la {}, {}", ptr_reg, global_label));
+            context.emit(&format!("    lw {}, 0({})", ptr_reg, ptr_reg)); // Load pointer value
+        } else {
+            context.emit(&format!("    lw {}, {}(s0)", ptr_reg, base_offset)); // Load pointer value from stack
+        }
+
+        // Add the scaled index to the pointer value
+        context.emit(&format!("    add {}, {}, {}", addr_reg, ptr_reg, addr_reg));
+
+        // Free temporary registers
+        context.free_register(&index_reg);
+        context.free_register(&ptr_reg);
+
+        return Ok(addr_reg);
+    }
+
+    // Regular array processing (existing code)
     // Check if dimensions match
     if indices.len() != dimensions.len() {
         return Err(CompileError::CodegenError(format!(
@@ -1390,9 +1585,50 @@ fn generate_ternary_operation(
     Ok(result_reg)
 }
 
-// Helper function to determine expression type
+/// Determine the result type of a binary operation
+pub fn get_binary_operation_type(
+    op: &str,
+    left: &AstNode,
+    right: &AstNode,
+    context: &mut CodeGenContext
+) -> Result<String, CompileError> {
+    let left_type = get_expression_type(left, context)?;
+    let right_type = get_expression_type(right, context)?;
+
+    // Special handling for pointer arithmetic
+    if (op == "+" || op == "-") && (left_type.ends_with('*') || right_type.ends_with('*')) {
+        if left_type.ends_with('*') && (op == "+" || op == "-") && !right_type.ends_with('*') {
+            // ptr + int or ptr - int: result is the same pointer type
+            return Ok(left_type);
+        } else if right_type.ends_with('*') && op == "+" && !left_type.ends_with('*') {
+            // int + ptr: result is the pointer type
+            return Ok(right_type);
+        } else if left_type.ends_with('*') && right_type.ends_with('*') && op == "-" {
+            // ptr - ptr: result is an integer
+            return Ok("int".to_string());
+        }
+    }
+
+    // Regular binary operations
+    match op {
+        // ... existing code for other operations ...
+        _ => {
+            if left_type == right_type {
+                Ok(left_type)
+            } else {
+                Err(CompileError::TypeError(
+                    format!("Type mismatch in binary operation: {} {} {}", left_type, op, right_type)
+                ))
+            }
+        }
+    }
+}
+
+// Update the get_expression_type function to handle binary operations with pointers
 pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
-    match node {
+    println!("Debug node: {:?}", node);
+
+    let result = match node {
         AstNode::IntConstant(_) => Ok("int".to_string()),
         AstNode::FloatConstant(_) => Ok("float".to_string()),
         AstNode::Identifier(name) => {
@@ -1450,8 +1686,7 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 if let Some(return_type) = context.get_function_return_type(func_name) {
                     Ok(return_type)
                 } else {
-                    // Default to int if we don't know the return type
-                    // Alternatively, you could return an error here
+                    // Default to int
                     Ok("int".to_string())
                 }
             } else {
@@ -1460,18 +1695,8 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
             }
         },
         // For binary operations, determine return type based on operands
-        AstNode::BinaryOperation { left, right, .. } => {
-            let left_type = get_expression_type(left, context)?;
-            let right_type = get_expression_type(right, context)?;
-
-            // Simple type promotion: float/double wins
-            if left_type == "double" || right_type == "double" {
-                Ok("double".to_string())
-            } else if left_type == "float" || right_type == "float" {
-                Ok("float".to_string())
-            } else {
-                Ok("int".to_string())
-            }
+        AstNode::BinaryOperation { op, left, right, .. } => {
+            get_binary_operation_type(op, left, right, context)
         },
         AstNode::UnaryOperation { operand, .. } => {
             let operand_type = get_expression_type(operand, context)?;
@@ -1483,9 +1708,58 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 Ok("int".to_string())
             }
         },
+        // Handle array subscript operations
+        AstNode::ArraySubscript { array, index } => {
+            // Get the type of the array or pointer
+            let array_type = get_expression_type(array, context)?;
+            println!("Array Name: {:?}, ArraySubscript base type: {}", array, array_type);
+
+            if let AstNode::Identifier(name) = &**array {
+                if let Some(symbol) = context.lookup_symbol(name) {
+                    println!("Symbol info for {}: is_pointer={}, type_info={}",
+                        name, symbol.is_pointer, symbol.type_info);
+
+                    // If it's an array, return the element type
+                    if !symbol.dimensions.is_empty() && !symbol.is_pointer {
+                        // Remove potential array indicator in type_info (e.g., "int[]" -> "int")
+                        let base_type = symbol.type_info.split('[').next().unwrap_or(&symbol.type_info).to_string();
+                        return Ok(base_type);
+                    }
+
+                    // For pointers, remove one level of pointer indirection
+                    if symbol.type_info.ends_with('*') {
+                        return Ok(symbol.type_info.trim_end_matches('*').to_string());
+                    }
+
+                    Ok(symbol.type_info.clone())
+                } else {
+                    Ok("int".to_string())
+                }
+            } else {
+                // If it's a pointer type (array_type ends with *)
+                if array_type.ends_with('*') {
+                    // Remove one level of pointer, e.g., "int**" -> "int*"
+                    return Ok(array_type.trim_end_matches('*').to_string());
+                }
+
+                Ok("int".to_string())
+            }
+        },
         // Handle other expression types
-        _ => Ok("int".to_string()), // Default to int for unknown expressions
+        _ => {
+            println!("Unhandled node type for type checking: {:?}", node);
+            Ok("int".to_string()) // Default to int for unknown expressions
+        }
+    };
+
+    // Print the final type result
+    if let Ok(ref type_str) = result {
+        println!("Expression type result: {}", type_str);
+    } else if let Err(ref error) = result {
+        println!("Expression type error: {:?}", error);
     }
+
+    result
 }
 
 /// Generate code for a struct member access

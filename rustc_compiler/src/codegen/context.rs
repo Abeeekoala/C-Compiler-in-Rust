@@ -22,6 +22,8 @@ pub struct Symbol {
     pub type_info: String,
     /// Dimensions of the array
     pub dimensions: Vec<usize>,
+    /// Whether this is a pointer
+    pub is_pointer: bool,
 }
 
 /// Definition of a struct
@@ -287,7 +289,9 @@ impl CodeGenContext {
 
     /// Add a variable to the symbol table
     pub fn add_variable(&mut self, name: String, type_name: String) -> i32 {
-        let allocated_size = if type_name == "double" { 8 } else { 4 };
+        // Check if this is a pointer type
+        let is_pointer = type_name.contains('*');
+        let allocated_size = if type_name == "double" { 8 } else { 4 }; // pointers are 4 bytes on 32-bit
         self.stack_offset -= allocated_size as i32;
 
         if self.in_function {
@@ -299,6 +303,7 @@ impl CodeGenContext {
                 size: allocated_size,
                 type_info: type_name,
                 dimensions: Vec::new(),
+                is_pointer,
             });
 
             offset
@@ -316,6 +321,7 @@ impl CodeGenContext {
                 size: allocated_size,
                 type_info: type_name,
                 dimensions: Vec::new(),
+                is_pointer,
             });
 
             0
@@ -347,6 +353,7 @@ impl CodeGenContext {
                 size: total_size,
                 type_info: array_type,
                 dimensions: dimensions,
+                is_pointer: false, // Arrays are not pointers, but they decay to pointers
             });
 
             offset
@@ -364,6 +371,7 @@ impl CodeGenContext {
                 size: total_size,
                 type_info: array_type,
                 dimensions: dimensions,
+                is_pointer: false,
             });
 
             0 // Return value doesn't matter for globals
@@ -577,6 +585,7 @@ impl CodeGenContext {
             size: struct_size,
             type_info: format!("struct {}", struct_name),
             dimensions: Vec::new(),
+            is_pointer: false,
         });
 
         offset

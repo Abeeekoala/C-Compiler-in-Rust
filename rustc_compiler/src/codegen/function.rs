@@ -35,62 +35,79 @@ pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result
 
                 for param in parameters.iter().take(16) { // Support up to 16 params (8 int + 8 float)
                     if let AstNode::Declaration { type_spec, declarator, .. } = &**param {
-                        if let AstNode::Identifier(param_name) = &**declarator {
-                            // Get parameter type as string
-                            let type_str = type_spec_to_string(type_spec);
-
-                            // Determine if parameter is floating-point
-                            let is_float = type_str == "float" || type_str == "double";
-
-                            // Get appropriate register based on type and parameter count
-                            let reg_name = if is_float {
-                                // Use float param count for fa registers
-                                if float_param_count >= 8 {
-                                    panic!("Too many float parameters");
+                        // Check if the declarator is a pointer
+                        let (param_name, is_pointer) = match &**declarator {
+                            AstNode::Identifier(name) => (name.clone(), false),
+                            AstNode::PointerDeclarator { pointee } => {
+                                if let AstNode::Identifier(name) = &**pointee {
+                                    (name.clone(), true)
                                 } else {
-                                    format!("fa{}", float_param_count)
+                                    return Err(CompileError::CodegenError("Expected identifier in pointer declarator".to_string()));
                                 }
-                            } else {
-                                // Use int param count for a registers
-                                if int_param_count >= 8 {
-                                    panic!("Too many integer parameters");
-                                } else {
-                                    format!("a{}", int_param_count)
-                                }
-                            };
+                            },
+                            _ => return Err(CompileError::CodegenError("Expected identifier or pointer declarator".to_string())),
+                        };
 
-                            // Increment the appropriate counter
-                            if is_float {
-                                float_param_count += 1;
-                            } else {
-                                int_param_count += 1;
-                            }
+                        // Get parameter type as string
+                        let mut type_str = type_spec_to_string(type_spec);
 
-                            // Allocate space on stack for the parameter
-                            let size = if type_str == "double" { 8 } else { 4 };
-                            let stack_offset = context.allocate_stack_space(size);
-
-                            // Store argument from register to stack
-                            if is_float {
-                                if type_str == "double" {
-                                    context.emit(&format!("    fsd {}, {}(s0)", reg_name, stack_offset));
-                                } else {
-                                    context.emit(&format!("    fsw {}, {}(s0)", reg_name, stack_offset));
-                                }
-                            } else {
-                                context.emit(&format!("    sw {}, {}(s0)", reg_name, stack_offset));
-                            }
-
-                            // Add to symbol table
-                            let symbol = Symbol {
-                                location: StorageLocation::Stack(stack_offset),
-                                size,
-                                type_info: type_str.clone(),
-                                dimensions: Vec::new(),
-                            };
-
-                            context.add_symbol(param_name, symbol);
+                        // Add pointer notation to type
+                        if is_pointer {
+                            type_str = format!("{}*", type_str);
                         }
+
+                        // Determine if parameter is floating-point
+                        let is_float = type_str == "float" || type_str == "double";
+
+                        // Get appropriate register based on type and parameter count
+                        let reg_name = if is_float {
+                            // Use float param count for fa registers
+                            if float_param_count >= 8 {
+                                panic!("Too many float parameters");
+                            } else {
+                                format!("fa{}", float_param_count)
+                            }
+                        } else {
+                            // Use int param count for a registers (pointers use integer registers)
+                            if int_param_count >= 8 {
+                                panic!("Too many integer parameters");
+                            } else {
+                                format!("a{}", int_param_count)
+                            }
+                        };
+
+                        // Increment the appropriate counter
+                        if is_float {
+                            float_param_count += 1;
+                        } else {
+                            int_param_count += 1;
+                        }
+
+                        // Allocate space on stack for the parameter
+                        let size = if type_str == "double" { 8 } else { 4 }; // pointers are 4 bytes on 32-bit
+                        let stack_offset = context.allocate_stack_space(size);
+
+                        // Store argument from register to stack
+                        if is_float {
+                            if type_str == "double" {
+                                context.emit(&format!("    fsd {}, {}(s0)", reg_name, stack_offset));
+                            } else {
+                                context.emit(&format!("    fsw {}, {}(s0)", reg_name, stack_offset));
+                            }
+                        } else {
+                            context.emit(&format!("    sw {}, {}(s0)", reg_name, stack_offset));
+                        }
+
+                        // Add to symbol table with pointer information
+                        let mut symbol = Symbol {
+                            location: StorageLocation::Stack(stack_offset),
+                            size,
+                            type_info: type_str.clone(),
+                            dimensions: Vec::new(),
+                            is_pointer,
+                        };
+
+                        context.add_symbol(&param_name, symbol);
                     }
                 }
 

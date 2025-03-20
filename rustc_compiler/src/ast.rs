@@ -156,6 +156,10 @@ pub enum AstNode {
         object: Box<AstNode>,
         member: String,
     },
+    /// Pointer type (e.g., int *p)
+    PointerDeclarator {
+        pointee: Box<AstNode>,
+    },
 }
 
 /// Binary operators

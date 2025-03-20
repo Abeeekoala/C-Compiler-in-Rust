@@ -318,80 +318,108 @@ fn generate_expression_statement(node: &AstNode, context: &mut CodeGenContext) -
 fn generate_declaration_item(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
     match node {
         AstNode::Declaration { type_spec, declarator, initializer } => {
-            match &**declarator {
-                AstNode::Identifier(name) => {
-                    match type_spec {
-                        TypeSpecifier::Struct(struct_name) => {
-                            context.add_struct_variable(name.clone(), struct_name.clone());
-                            if initializer.is_some() {
-                                return Err(CompileError::CodegenError("Struct initializers not yet supported".to_string()));
-                            }
+            // Convert TypeSpecifier to base type string
+            let base_type_str = match type_spec {
+                TypeSpecifier::Int => "int",
+                TypeSpecifier::Char => "char",
+                TypeSpecifier::Float => "float",
+                TypeSpecifier::Double => "double",
+                TypeSpecifier::Void => "void",
+                TypeSpecifier::Struct(struct_name) => {
+                    // Handle struct type
+                    if let AstNode::Identifier(name) = &**declarator {
+                        context.add_struct_variable(name.clone(), struct_name.clone());
+                        if initializer.is_some() {
+                            return Err(CompileError::CodegenError("Struct initializers not yet supported".to_string()));
+                        }
+                        return Ok(());
+                    } else {
+                        return Err(CompileError::CodegenError("Expected identifier for struct variable".to_string()));
+                    }
+                },
+                _ => return Err(CompileError::CodegenError("Unsupported type specifier".to_string())),
+            }.to_string();
+
+            // Handle array declarations
+            if let AstNode::ArrayDeclarator { .. } = &**declarator {
+                let (name, dimensions) = extract_array_declarator(declarator)?;
+                let offset = context.add_array(name.to_string(), base_type_str, dimensions.clone());
+
+                if let Some(init) = initializer {
+                    match &**init {
+                        AstNode::InitializerList(elements) => {
+                            initialize_array(&name, &dimensions, elements, offset, context)?;
                         },
                         _ => {
-                            let offset = context.add_variable(name.clone(), type_spec_to_string(type_spec));
-                            if let Some(init) = initializer {
-                                if context.in_function {
-                                    let reg = expression::generate_expression(init, context)?;
-
-                                    match type_spec {
-                                        TypeSpecifier::Float => {
-                                            context.emit(&format!("    fsw {}, {}(s0)", reg, offset));
-
-                                            if reg.starts_with('f') {
-                                                context.free_fp_register(&reg);
-                                            }
-                                        }
-                                        TypeSpecifier::Double => {
-                                            context.emit(&format!("    fsd {}, {}(s0)", reg, offset));
-                                            if reg.starts_with('f') {
-                                                context.free_fp_register(&reg);
-                                            }
-                                        }
-                                        _ => {
-                                            context.emit(&format!("    sw {}, {}(s0)", reg, offset));
-                                            context.free_register(&reg);
-                                        }
-                                    }
-                                } else {
-                                    if let AstNode::IntConstant(value) = &**init {
-                                        context.initialize_global_variable(name.clone(), *value);
-                                    } else if let AstNode::FloatConstant(value) = &**init {
-                                        let float_bits = f32::to_bits(*value as f32);
-                                        context.initialize_global_variable_raw(name.clone(), float_bits);
-                                    } else {
-                                        return Err(CompileError::CodegenError("Global variable initializer must be a constant".to_string()));
-                                    }
-                                }
-                            }
+                            return Err(CompileError::CodegenError("Array initializer must be an initializer list".to_string()));
                         }
                     }
-                    Ok(())
-                },
-                AstNode::ArrayDeclarator { .. } => {
-                    extract_array_declarator(declarator).and_then(|(name, dimensions)| {
-                        let size = context.add_array(name.clone(), type_spec_to_string(type_spec), dimensions.clone());
-
-                        if let Some(init) = initializer {
-                            if let AstNode::InitializerList(elements) = &**init {
-                                match &dimensions[..] {
-                                    [dim_size] => {
-                                        initialize_array(&name, &dimensions, elements, size, context)?;
-                                    }
-                                    _ => {
-                                        initialize_array(&name, &dimensions, elements, size, context)?;
-                                    }
-                                }
-                            } else {
-                                return Err(CompileError::CodegenError("Expected initializer list for array".to_string()));
-                            }
-                        }
-
-                        Ok(())
-                    })
-
-                },
-                _ => Err(CompileError::CodegenError("Expected identifier or array declarator".to_string())),
+                }
+                return Ok(());
             }
+
+            // Handle simple variables and pointers
+            let name = extract_base_identifier(&**declarator)?;
+            let type_str = compute_type_string(&**declarator, &base_type_str);
+
+            // Determine size based on type
+            let size = if type_str.ends_with("*") {
+                4 // Pointers are 4 bytes
+            } else {
+                match type_spec {
+                    TypeSpecifier::Double => 8,
+                    _ => 4, // int, float, char
+                }
+            };
+
+            // Allocate space
+            let stack_offset = context.add_variable(name.to_string(), type_str.clone());
+
+            // Handle initializer
+            if let Some(init_expr) = initializer {
+                if context.in_function {
+                    // Local variable/pointer initialization
+                    let reg = expression::generate_expression(init_expr, context)?;
+
+                    // Store based on type
+                    if type_str == "float" && reg.starts_with('f') {
+                        context.emit(&format!("    fsw {}, {}(s0)", reg, stack_offset));
+                        context.free_fp_register(&reg);
+                    } else if type_str == "double" && reg.starts_with('f') {
+                        context.emit(&format!("    fsd {}, {}(s0)", reg, stack_offset));
+                        context.free_fp_register(&reg);
+                    } else if (type_str == "float" || type_str == "double") && !reg.starts_with('f') {
+                        let fp_reg = context.get_fp_register();
+                        context.emit(&format!("    fcvt.s.w {}, {}", fp_reg, reg));
+                        context.emit(&format!("    fsw {}, {}(s0)", fp_reg, stack_offset));
+                        context.free_register(&reg);
+                        context.free_fp_register(&fp_reg);
+                    } else {
+                        // Integers and pointers use sw
+                        context.emit(&format!("    sw {}, {}(s0)", reg, stack_offset));
+                        context.free_register(&reg);
+                    }
+                } else {
+                    // Global variable/pointer initialization
+                    if type_str == "float" || type_str == "double" {
+                        if let AstNode::FloatConstant(value) = &**init_expr {
+                            let float_bits = f32::to_bits(*value as f32);
+                            context.initialize_global_variable_raw(name.to_string(), float_bits);
+                        } else {
+                            return Err(CompileError::CodegenError(
+                                "Global floating-point variable initializer must be a constant".to_string()
+                            ));
+                        }
+                    } else if let AstNode::IntConstant(value) = &**init_expr {
+                        context.initialize_global_variable(name.to_string(), *value);
+                    } else {
+                        return Err(CompileError::CodegenError(
+                            "Global variable initializer must be a constant".to_string()
+                        ));
+                    }
+                }
+            }
+            Ok(())
         },
         _ => Err(CompileError::CodegenError("Expected declaration".to_string())),
     }
@@ -746,4 +774,32 @@ fn initialize_multi_dimensional_array(
     }
 
     Ok(())
+}
+
+fn extract_base_identifier(declarator: &AstNode) -> Result<String, CompileError> {
+    match declarator {
+        AstNode::Identifier(name) => Ok(name.clone()),
+        AstNode::PointerDeclarator { pointee } => extract_base_identifier(&**pointee),
+        AstNode::ArrayDeclarator { base, .. } => extract_base_identifier(&**base),
+        _ => Err(CompileError::CodegenError("Invalid declarator".to_string())),
+    }
+}
+
+fn compute_type_string(declarator: &AstNode, base_type: &str) -> String {
+    match declarator {
+        AstNode::Identifier(_) => base_type.to_string(),
+        AstNode::PointerDeclarator { pointee } => {
+            let pointee_type = compute_type_string(&**pointee, base_type);
+            format!("{}*", pointee_type)
+        },
+        AstNode::ArrayDeclarator { base, size } => {
+            let base_type_str = compute_type_string(&**base, base_type);
+            if let AstNode::IntConstant(n) = &**size {
+                format!("{}[{}]", base_type_str, n)
+            } else {
+                panic!("Array size must be constant");
+            }
+        },
+        _ => panic!("Unsupported declarator"),
+    }
 }
