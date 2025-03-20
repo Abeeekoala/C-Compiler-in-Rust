@@ -953,6 +953,47 @@ impl Parser {
                     operand: Box::new(expr),
                 })
             },
+            Some(Token::SizeofKw) => {
+                self.advance();
+
+                // Check if the next token is a left parenthesis
+                if let Some(Token::LParen) = self.peek() {
+                    self.advance(); // Consume the '('
+
+                    // Try to parse as a type name first
+                    if let Ok(type_spec) = self.parse_type_specifier() {
+                        let mut pointers = 0;
+
+                        // Handle pointer types
+                        while let Some(Token::Mul) = self.peek() {
+                            self.advance();
+                            pointers += 1;
+                        }
+
+                        self.expect_token(Token::RParen)?;
+
+                        // Create a SizeofType node
+                        return Ok(AstNode::SizeofType {
+                            type_spec,
+                            pointer_level: pointers
+                        });
+                    } else {
+                        // If not a type, must be an expression
+                        let expr = self.parse_expression()?;
+                        self.expect_token(Token::RParen)?;
+
+                        return Ok(AstNode::SizeofExpr {
+                            expr: Box::new(expr)
+                        });
+                    }
+                } else {
+                    // sizeof followed by an unary expression without parentheses
+                    let operand = self.parse_unary_expression()?;
+                    return Ok(AstNode::SizeofExpr {
+                        expr: Box::new(operand)
+                    });
+                }
+            },
             _ => self.parse_postfix_expression(),
         }
     }

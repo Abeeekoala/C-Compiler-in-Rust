@@ -1,6 +1,7 @@
 use crate::ast::AstNode;
 use crate::codegen::context::CodeGenContext;
 use crate::codegen::context::StorageLocation;
+use crate::ast::TypeSpecifier;
 use crate::error::CompileError;
 /// Generate code for an expression
 pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
@@ -348,6 +349,26 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
         },
         AstNode::MemberAccess { object, member } => {
             generate_member_access(object, member, context)
+        },
+        AstNode::SizeofType { type_spec, pointer_level } => {
+            // Handle sizeof(type)
+            let size = get_type_size(type_spec, *pointer_level, context);
+            let result_reg = context.get_register();
+            context.emit(&format!("    # sizeof type {}{}",
+                type_spec,
+                "*".repeat(*pointer_level)));
+            context.emit(&format!("    li {}, {}", result_reg, size));
+            Ok(result_reg)
+        },
+
+        AstNode::SizeofExpr { expr } => {
+            // Handle sizeof(expression)
+            let expr_type = get_expression_type(expr, context)?;
+            let size = get_size_from_type_string(&expr_type);
+            let result_reg = context.get_register();
+            context.emit(&format!("    # sizeof expression with type {}", expr_type));
+            context.emit(&format!("    li {}, {}", result_reg, size));
+            Ok(result_reg)
         },
         // Handle other expression types
         _ => Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node))),
@@ -1745,6 +1766,10 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 Ok("int".to_string())
             }
         },
+        AstNode::SizeofType { .. } | AstNode::SizeofExpr { .. } => {
+            // sizeof always returns an integer
+            Ok("int".to_string())
+        },
         // Handle other expression types
         _ => {
             println!("Unhandled node type for type checking: {:?}", node);
@@ -1853,5 +1878,49 @@ fn generate_member_access(object: &AstNode, member: &str, context: &mut CodeGenC
                 "Complex struct member access not supported yet".to_string()
             ))
         }
+    }
+}
+
+fn get_type_size(type_spec: &TypeSpecifier, pointer_level: usize, context: &mut CodeGenContext) -> i32 {
+    if pointer_level > 0 {
+        return 4; // All pointers are 4 bytes
+    }
+
+    match type_spec {
+        TypeSpecifier::Char => 1,
+        TypeSpecifier::Short => 2,
+        TypeSpecifier::Int => 4,
+        TypeSpecifier::Long => 4,
+        TypeSpecifier::Float => 4,
+        TypeSpecifier::Double => 8,
+        TypeSpecifier::Void => 1, // Technically 0, but often 1 in C
+        TypeSpecifier::Struct(name) => {
+            // Look up the struct definition to calculate its size
+            if let Some(struct_def) = context.struct_definitions.get(name) {
+                struct_def.total_size as i32
+            } else {
+                4
+            }
+        },
+        _ => 4, // Default size for unknown types
+    }
+}
+
+// Helper function to get size from a type string
+fn get_size_from_type_string(type_str: &str) -> i32 {
+    if type_str.ends_with('*') {
+        return 4; // All pointers are 4 bytes
+    }
+
+    match type_str {
+        "char" => 1,
+        "short" => 2,
+        "int" => 4,
+        "long" => 4,
+        "float" => 4,
+        "double" => 8,
+        "void" => 1,
+        _ if type_str.starts_with("struct ") => 4, // Should be calculated from struct definition
+        _ => 4, // Default size
     }
 }

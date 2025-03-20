@@ -160,6 +160,15 @@ pub enum AstNode {
     PointerDeclarator {
         pointee: Box<AstNode>,
     },
+    SizeofType {
+        type_spec: TypeSpecifier,
+        pointer_level: usize,
+    },
+
+    /// sizeof operator with an expression operand
+    SizeofExpr {
+        expr: Box<AstNode>,
+    },
 }
 
 /// Binary operators
