@@ -8,16 +8,11 @@ fn main() -> Result<(), CompileError> {
 
     // Get the input and output files based on command-line arguments
     let (input_file, output_file, debug_mode) = match args.len() {
-        // Handle formats:
-        // 1. [compiler] [input] [output]
-        // 2. [compiler] [input] [output] [--debug]
         3 => {
-            // Basic format: compiler input_file output_file
             (args[1].clone(), args[2].clone(), false)
         },
         4 => {
             if args[3] == "--debug" {
-                // Format: compiler input_file output_file --debug
                 (args[1].clone(), args[2].clone(), true)
             } else {
                 return Err(CompileError::IOError("Unexpected argument format".to_string()));

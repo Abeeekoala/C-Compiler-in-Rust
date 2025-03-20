@@ -180,6 +180,9 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
         AstNode::FloatConstant(value) => {
             generate_float_constant(*value, context)
         },
+        AstNode::TernaryOperation { condition, true_expr, false_expr } => {
+            generate_ternary_operation(condition, true_expr, false_expr, context)
+        },
         // Handle other expression types
         _ => Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node))),
     }
@@ -1039,6 +1042,38 @@ fn generate_double_binary_operation(
     Ok(result_reg)
 }
 
+fn generate_ternary_operation(
+    condition: &AstNode,
+    true_expr: &AstNode,
+    false_expr: &AstNode,
+    context: &mut CodeGenContext
+) -> Result<String, CompileError> {
+    let cond_reg = generate_expression(condition, context)?;
+    let true_label = context.generate_label("ternary_true");
+    let end_label = context.generate_label("ternary_end");
+
+    context.emit(&format!("    bnez {}, {}", cond_reg, true_label));
+    context.free_register(&cond_reg);
+
+    let false_reg = generate_expression(false_expr, context)?;
+    context.emit(&format!("    j {}", end_label));
+
+    context.emit(&format!("{}:", true_label));
+    let true_reg = generate_expression(true_expr, context)?;
+
+    context.emit(&format!("{}:", end_label));
+
+    let mut result_reg = context.get_register();
+    if true_reg != false_reg {
+        context.emit(&format!("    mv {}, {}", result_reg, true_reg));
+        context.free_register(&true_reg);
+        context.free_register(&false_reg);
+    } else {
+        result_reg = true_reg;
+    }
+
+    Ok(result_reg)
+}
 
 // Helper function to determine expression type
 pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {

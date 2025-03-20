@@ -3,11 +3,10 @@
 use logos::Logos;
 use crate::error::CompileError;
 /// The set of tokens that our C90 lexer will recognize.
-///
-/// Keyword tokens are suffixed with `Kw` to differentiate them from literal tokens.
+/// Keyword tokens are suffixed with Kw to differentiate them from the literal tokens
 #[derive(Logos, Debug, PartialEq, Clone)]
 pub enum Token {
-    // --- Keywords (expanded to match the Flex file) ---
+    // Keywords
     #[token("auto")]
     AutoKw,
     #[token("break")]
@@ -73,11 +72,11 @@ pub enum Token {
     #[token("while")]
     WhileKw,
 
-    // --- Identifiers ---
+    // Identifiers
     #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string())]
     Identifier(String),
 
-    // --- Numeric Literals ---
+    // Numeric Literals
     #[regex("0[xX][0-9a-fA-F]+[uUlL]*", |lex| parse_int(lex.slice()))]
     IntLiteralHex((i64, Option<String>)),
     #[regex("0[0-7]+[uUlL]*", |lex| parse_int(lex.slice()))]
@@ -88,8 +87,7 @@ pub enum Token {
     #[regex(r"'([^'\\]|\\.)'", parse_char_as_int)]
     IntLiteralChar(i64),
 
-    // Floating point literal:
-    // Supports: 3.14, .5, 2., 1e10, 3.14E-2, etc., with optional [fFlL] suffix.
+    // Floating point literal
     #[regex(r"[0-9]+\.[0-9]*([Ee][+-]?[0-9]+)?[fFlL]?", |lex| parse_float(lex.slice()))]
     #[regex(r"\.[0-9]+([Ee][+-]?[0-9]+)?[fFlL]?", |lex| parse_float(lex.slice()))]
     #[regex(r"[0-9]+([Ee][+-]?[0-9]+)[fFlL]?", |lex| parse_float(lex.slice()))]
@@ -224,7 +222,7 @@ pub enum Token {
     #[token(">>=")]
     RightAssign,
 
-    // --- Whitespace and Comments (skipped) ---
+    // Whitespace and Comments not implemented yet
     #[regex(r"[ \t\n\f]+", logos::skip)]
     Whitespace,
     #[regex(r"//[^\n]*", logos::skip)]
@@ -265,7 +263,7 @@ fn parse_int(slice: &str) -> (i64, Option<String>) {
 
 fn parse_char_as_int(lex: &logos::Lexer<Token>) -> i64 {
     let s = lex.slice();
-    let inner = &s[1..s.len() - 1]; // Remove quotes
+    let inner = &s[1..s.len() - 1];
     if inner.starts_with('\\') {
         match inner.chars().nth(1).unwrap() {
             'n' => '\n' as i64,
@@ -294,7 +292,7 @@ fn parse_float(slice: &str) -> (f64, Option<String>) {
     (value, suffix)
 }
 
-/// Tokenize a string into a vector of tokens.
+/// String of tokens into a vector of tokens.
 pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
     let mut lexer = Token::lexer(source);
     let mut tokens = Vec::new();
@@ -309,7 +307,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
     Ok(tokens)
 }
 
-//unit tests
+// Unit tests
 #[cfg(test)]
 mod tests {
     use super::*;

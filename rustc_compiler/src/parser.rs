@@ -6,6 +6,7 @@ use crate::ast::{AstNode, TypeSpecifier, Context};
 use std::iter::Peekable;
 use std::vec::IntoIter;
 use crate::error::CompileError;
+
 /// The parser struct holds the list of tokens and provides methods to parse them.
 pub struct Parser {
     tokens: Vec<Token>,
@@ -15,7 +16,7 @@ pub struct Parser {
 type ParseResult = Result<AstNode, CompileError>;
 
 impl Parser {
-    /// Create a new parser from a vector of tokens.
+    /// Create a new parser from a vector of tokens
     pub fn new(tokens: Vec<Token>) -> Self {
         Parser {
             tokens,
@@ -56,26 +57,19 @@ impl Parser {
 
     /// Parse an external declaration (function or global variable)
     fn parse_external_declaration(&mut self) -> ParseResult {
-        // Save current position in case we need to backtrack
         let start_pos = self.current;
 
-        // Parse declaration specifiers
         let type_spec = self.parse_declaration_specifiers()?;
 
-        // Parse identifier
         let identifier = self.parse_identifier()?;
 
-        // Check if this is a function
         if let Some(Token::LParen) = self.peek() {
-            self.advance(); // Consume '('
+            self.advance();
 
-            // Parse parameter list
             let parameters = self.parse_parameter_list()?;
             self.expect_token(Token::RParen)?;
 
-            // Check if this is a declaration or definition
             if let Some(Token::LBrace) = self.peek() {
-                // Function definition
                 let body = self.parse_compound_statement()?;
 
                 return Ok(AstNode::FunctionDefinition {
@@ -85,7 +79,6 @@ impl Parser {
                     compound_statement: Box::new(body),
                 });
             } else {
-                // Function declaration (prototype)
                 self.expect_token(Token::Semicolon)?;
 
                 return Ok(AstNode::FunctionDeclaration {
@@ -95,26 +88,22 @@ impl Parser {
                 });
             }
         } else {
-            // Check for array declarator
             let mut declarator = AstNode::Identifier(identifier);
             while let Some(Token::LBracket) = self.peek() {
-                self.advance(); // Consume '['
-                let size = self.parse_expression()?; // Parse the size expression
-                self.expect_token(Token::RBracket)?; // Expect ']'
+                self.advance();
+                let size = self.parse_expression()?;
+                self.expect_token(Token::RBracket)?;
                 declarator = AstNode::ArrayDeclarator {
                     base: Box::new(declarator),
                     size: Box::new(size),
                 };
             }
-
-            // Check for initializer
             let initializer = if let Some(Token::Assign) = self.peek() {
-                self.advance(); // Consume '='
+                self.advance();
                 Some(Box::new(self.parse_initializer()?))
             } else {
                 None
             };
-
             self.expect_token(Token::Semicolon)?;
             Ok(AstNode::Declaration {
                 type_spec,
@@ -126,21 +115,14 @@ impl Parser {
 
     /// Parse a function definition
     pub fn parse_function_definition(&mut self) -> ParseResult {
-        // Parse declaration specifiers
         let type_spec = self.parse_declaration_specifiers()?;
         let mut decl_spec = Vec::new();
         decl_spec.push(Box::new(AstNode::TypeSpecifier(type_spec)));
-
-        // Parse function name
         let function_name = self.parse_identifier()?;
         let declarator = Box::new(AstNode::Identifier(function_name));
-
-        // Parse parameter list
-        self.expect_token(Token::LParen)?; // Expect '('
+        self.expect_token(Token::LParen)?;
         let parameters = self.parse_parameter_list()?;
-        self.expect_token(Token::RParen)?; // Expect ')'
-
-        // Parse compound statement (function body)
+        self.expect_token(Token::RParen)?;
         let body = self.parse_compound_statement()?;
 
         Ok(AstNode::FunctionDefinition {
@@ -159,8 +141,7 @@ impl Parser {
                 Token::VoidKw => Ok(TypeSpecifier::Void),
                 Token::CharKw => Ok(TypeSpecifier::Char),
                 Token::FloatKw => Ok(TypeSpecifier::Float),
-                Token::DoubleKw => Ok(TypeSpecifier::Double),
-                // Add other type specifiers as needed
+                Token::DoubleKw => Ok(TypeSpecifier::Double), // Expand as required
                 _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token))),
             }
         } else {
@@ -180,24 +161,18 @@ impl Parser {
 
         let mut initializers = Vec::new();
 
-        // Handle empty initializer list: {}
         if let Some(Token::RBrace) = self.peek() {
             self.advance();
             return Ok(AstNode::InitializerList(initializers));
         }
 
-        // Parse first initializer
         initializers.push(Box::new(self.parse_initializer()?));
 
-        // Parse remaining initializers
         while let Some(Token::Comma) = self.peek() {
-            self.advance(); // Consume comma
-
-            // Handle trailing comma: {1, 2, }
+            self.advance();
             if let Some(Token::RBrace) = self.peek() {
                 break;
             }
-
             initializers.push(Box::new(self.parse_initializer()?));
         }
 
@@ -208,21 +183,14 @@ impl Parser {
 
     /// Parse a declarator
     fn parse_declarator(&mut self) -> ParseResult {
-        // Check for identifier
         if let Some(Token::Identifier(name)) = self.advance() {
             let id_node = AstNode::Identifier(name.clone());
 
-            // Check if this is a function declarator (has parentheses)
             if let Some(Token::LParen) = self.peek() {
-                self.advance(); // Consume '('
-
-                // Parse parameter list - call our new function here
+                self.advance();
                 let params = self.parse_parameter_list()?;
-
-                // Expect closing parenthesis
                 self.expect_token(Token::RParen)?;
 
-                // Create a function declarator node
                 return Ok(AstNode::FunctionCall {
                     function: Box::new(id_node),
                     args: params,
@@ -236,10 +204,7 @@ impl Parser {
     }
 
     pub fn parse_declaration(&mut self) -> ParseResult {
-        // Parse the type specifier
         let type_specifier = self.parse_type_specifier()?;
-
-        // Parse the variable identifier
         let identifier = self.parse_identifier()?;
         let mut declarator = AstNode::Identifier(identifier);
 
@@ -253,7 +218,6 @@ impl Parser {
             };
         }
 
-        // Check for initializer
         let initializer = match self.peek() {
             Some(token) if *token == Token::Assign => {
                 self.expect_token(Token::Assign)?;
@@ -262,9 +226,7 @@ impl Parser {
             _ => None
         };
 
-        // Expect semicolon
         self.expect_token(Token::Semicolon)?;
-
         Ok(AstNode::Declaration {
             type_spec: type_specifier,
             declarator: Box::new(declarator),
@@ -274,20 +236,14 @@ impl Parser {
 
     /// Parse a compound statement
     fn parse_compound_statement(&mut self) -> ParseResult {
-        // Expect '{'
         self.expect_token(Token::LBrace)?;
-
         let mut statements = Vec::new();
 
-        // Parse statements until '}'
         while !self.check_token(Token::RBrace) {
             statements.push(Box::new(self.parse_statement()?));
         }
 
-        // Expect '}'
         self.expect_token(Token::RBrace)?;
-
-        // Return block/compound statement
         Ok(AstNode::BlockStatement(statements))
     }
 
@@ -296,43 +252,37 @@ impl Parser {
         match self.peek() {
             // Empty statement (just a semicolon)
             Some(Token::Semicolon) => {
-                self.advance(); // Consume the semicolon
+                self.advance();
                 Ok(AstNode::ExpressionStatement(Box::new(AstNode::NodeList(Vec::new()))))
             },
-
             // Declaration statements
             Some(Token::IntKw) | Some(Token::CharKw) | Some(Token::VoidKw) | Some(Token::FloatKw) | Some(Token::DoubleKw) => {
                 self.parse_declaration()
             },
-
             // Compound statements
             Some(Token::LBrace) => self.parse_compound_statement(),
-
             // If statements
             Some(Token::IfKw) => self.parse_if_statement(),
-
             // Return statements
             Some(Token::ReturnKw) => self.parse_return_statement(),
-
             // While statements
             Some(Token::WhileKw) => self.parse_while_statement(),
-
             // For statements
             Some(Token::ForKw) => self.parse_for_statement(),
-
             // Switch statements
             Some(Token::SwitchKw) => self.parse_switch_statement(),
+            // Breaks
             Some(Token::BreakKw) => {
                 self.advance();
                 self.expect_token(Token::Semicolon)?;
                 Ok(AstNode::BreakStatement)
             },
+            // Continues
             Some(Token::ContinueKw) => {
                 self.advance();
                 self.expect_token(Token::Semicolon)?;
                 Ok(AstNode::ContinueStatement)
             },
-
             _ => {
                 let expr = self.parse_expression()?;
                 // Expect ';'
@@ -346,8 +296,9 @@ impl Parser {
         }
     }
 
+    /// Switch statement parsing
     fn parse_switch_statement(&mut self) -> ParseResult {
-        self.advance(); // Consume 'switch'
+        self.advance();
         self.expect_token(Token::LParen)?;
         let expr = self.parse_expression()?;
         self.expect_token(Token::RParen)?;
@@ -359,7 +310,7 @@ impl Parser {
         while !self.check_token(Token::RBrace) {
             match self.peek() {
                 Some(Token::CaseKw) => {
-                    self.advance(); // Consume 'case'
+                    self.advance();
                     let value = self.parse_constant_expression()?;
                     self.expect_token(Token::Colon)?;
                     let mut body = Vec::new();
@@ -369,7 +320,7 @@ impl Parser {
                     cases.push(SwitchCase { value: Box::new(value), body });
                 }
                 Some(Token::DefaultKw) => {
-                    self.advance(); // Consume 'default'
+                    self.advance();
                     self.expect_token(Token::Colon)?;
                     let mut body = Vec::new();
                     while !matches!(self.peek(), Some(Token::CaseKw | Token::DefaultKw | Token::RBrace)) {
@@ -382,7 +333,6 @@ impl Parser {
         }
 
         self.expect_token(Token::RBrace)?;
-
         Ok(AstNode::SwitchStatement {
             expr: Box::new(expr),
             cases,
@@ -395,15 +345,15 @@ impl Parser {
         let expr = self.parse_conditional_expression()?;
 
         if !Self::is_constant_expression(&expr) {
-            self.current = start_pos;  // Rewind
+            self.current = start_pos;
             return Err(CompileError::ParserError(
                 "Non-constant expression in case label".into()
             ));
         }
-
         Ok(expr)
     }
 
+    /// Parsing conditions with case
     fn is_constant_expression(node: &AstNode) -> bool {
         match node {
             AstNode::IntConstant(_) | AstNode::CharConstant(_) => true,
@@ -415,18 +365,17 @@ impl Parser {
         }
     }
 
+    /// Parse for loops
     fn parse_for_statement(&mut self) -> ParseResult {
-        self.advance(); // Consume 'for'
+        self.advance();
         self.expect_token(Token::LParen)?;
 
-        // Parse initialization (can be empty)
         let init = if self.check_token(Token::Semicolon) {
             AstNode::Empty
         } else {
             self.parse_expression_statement()?
         };
 
-        // Parse condition (can be empty, default to true)
         let condition = if self.check_token(Token::Semicolon) {
             AstNode::IntConstant(1) // Default true
         } else {
@@ -435,7 +384,6 @@ impl Parser {
             expr
         };
 
-        // Parse increment (can be empty)
         let increment = if self.check_token(Token::RParen) {
             AstNode::Empty
         } else {
@@ -443,8 +391,6 @@ impl Parser {
             self.expect_token(Token::RParen)?;
             expr
         };
-
-        // Parse body
         let body = self.parse_statement()?;
 
         Ok(AstNode::ForLoop {
@@ -455,22 +401,14 @@ impl Parser {
         })
     }
 
+    /// Parse while loops
     fn parse_while_statement(&mut self) -> Result<AstNode, CompileError> {
-        self.advance(); // Consume the 'while' token
-
-        // Expect '('
+        self.advance();
         self.expect_token(Token::LParen)?;
-
-        // Parse the loop condition
         let condition = self.parse_expression()?;
-
-        // Expect ')'
         self.expect_token(Token::RParen)?;
-
-        // Parse the loop body (this could be a single statement or a block)
         let body = self.parse_statement()?;
 
-        // Return a WhileStatement AST node
         Ok(AstNode::WhileStatement {
             condition: Box::new(condition),
             body: Box::new(body),
@@ -506,10 +444,8 @@ impl Parser {
 
     /// Parse an expression
     fn parse_expression(&mut self) -> ParseResult {
-        // Start with lowest precedence: comma expressions
         let mut expr = self.parse_assignment_expression()?;
 
-        // Handle comma-separated expressions
         while let Some(Token::Comma) = self.peek() {
             self.advance(); // Consume ','
             let right = self.parse_assignment_expression()?;
@@ -601,22 +537,14 @@ impl Parser {
         Ok(lhs)
     }
 
-    /// Parse conditional expression (ternary operator)
+    /// Parse ternary operator
     fn parse_conditional_expression(&mut self) -> ParseResult {
-        // Parse the condition part
         let condition = self.parse_logical_or_expression()?;
 
-        // Check for the '?' operator
         if let Some(Token::Question) = self.peek() {
-            self.advance(); // Consume '?'
-
-            // Parse the true expression
+            self.advance();
             let true_expr = self.parse_expression()?;
-
-            // Expect ':'
             self.expect_token(Token::Colon)?;
-
-            // Parse the false expression
             let false_expr = self.parse_conditional_expression()?;
 
             return Ok(AstNode::TernaryOperation {
@@ -626,7 +554,6 @@ impl Parser {
             });
         }
 
-        // If no '?', return the logical OR expression
         Ok(condition)
     }
 
@@ -669,7 +596,7 @@ impl Parser {
         let mut expr = self.parse_exclusive_or_expression()?;
 
         while let Some(Token::BitOr) = self.peek() {
-            self.advance(); // Consume '|'
+            self.advance();
             let right = self.parse_exclusive_or_expression()?;
             expr = AstNode::BinaryOperation {
                 op: "|".to_string(),
@@ -686,7 +613,7 @@ impl Parser {
         let mut expr = self.parse_and_expression()?;
 
         while let Some(Token::BitXor) = self.peek() {
-            self.advance(); // Consume '^'
+            self.advance();
             let right = self.parse_and_expression()?;
             expr = AstNode::BinaryOperation {
                 op: "^".to_string(),
@@ -703,7 +630,7 @@ impl Parser {
         let mut expr = self.parse_equality_expression()?;
 
         while let Some(Token::BitAnd) = self.peek() {
-            self.advance(); // Consume '&'
+            self.advance();
             let right = self.parse_equality_expression()?;
             expr = AstNode::BinaryOperation {
                 op: "&".to_string(),
@@ -726,7 +653,7 @@ impl Parser {
                 _ => break,
             };
 
-            self.advance(); // Consume operator
+            self.advance();
             let right = self.parse_relational_expression()?;
             expr = AstNode::BinaryOperation {
                 op: op.to_string(),
@@ -751,7 +678,7 @@ impl Parser {
                 _ => break,
             };
 
-            self.advance(); // Consume operator
+            self.advance();
             let right = self.parse_shift_expression()?;
             expr = AstNode::BinaryOperation {
                 op: op.to_string(),
@@ -774,7 +701,7 @@ impl Parser {
                 _ => break,
             };
 
-            self.advance(); // Consume operator
+            self.advance();
             let right = self.parse_additive_expression()?;
             expr = AstNode::BinaryOperation {
                 op: op.to_string(),
@@ -797,7 +724,7 @@ impl Parser {
                 _ => break,
             };
 
-            self.advance(); // Consume operator
+            self.advance();
             let right = self.parse_multiplicative_expression()?;
             expr = AstNode::BinaryOperation {
                 op: op.to_string(),
@@ -821,7 +748,7 @@ impl Parser {
                 _ => break,
             };
 
-            self.advance(); // Consume operator
+            self.advance();
             let right = self.parse_cast_expression()?;
             expr = AstNode::BinaryOperation {
                 op: op.to_string(),
@@ -833,10 +760,10 @@ impl Parser {
         Ok(expr)
     }
 
-    /// Parse cast expression (type casting)
+    /// Parse type casting
     fn parse_cast_expression(&mut self) -> ParseResult {
         // For now, we'll skip cast expressions and just go to unary
-        // Later: Add support for type casting
+        // Later: Add support for type casting???
         self.parse_unary_expression()
     }
 
@@ -918,33 +845,29 @@ impl Parser {
         loop {
             match self.peek() {
                 Some(Token::LBracket) => {
-                    self.advance(); // Consume '['
+                    self.advance();
                     let index = self.parse_expression()?;
-                    self.expect_token(Token::RBracket)?; // Expect ']'
+                    self.expect_token(Token::RBracket)?;
                     expr = AstNode::ArraySubscript {
                         array: Box::new(expr),
                         index: Box::new(index),
                     };
                 },
                 Some(Token::LParen) => {
-                    self.advance(); // Consume '('
+                    self.advance();
 
-                    // Parse function arguments
                     let mut args = Vec::new();
                     if let Some(Token::RParen) = self.peek() {
                         // Empty argument list
                     } else {
-                        // Parse at least one argument
                         args.push(Box::new(self.parse_assignment_expression()?));
-
-                        // Parse additional arguments
                         while let Some(Token::Comma) = self.peek() {
                             self.advance(); // Consume ','
                             args.push(Box::new(self.parse_assignment_expression()?));
                         }
                     }
 
-                    self.expect_token(Token::RParen)?; // Expect ')'
+                    self.expect_token(Token::RParen)?;
                     expr = AstNode::FunctionCall {
                         function: Box::new(expr),
                         args,
@@ -964,7 +887,7 @@ impl Parser {
                         operand: Box::new(expr),
                     };
                 },
-                // Later: Add support for member access (. and ->)
+                // Later adding support for member access (. and ->)
                 _ => break,
             }
         }
@@ -1016,22 +939,12 @@ impl Parser {
     /// Parse an if statement
     fn parse_if_statement(&mut self) -> ParseResult {
         self.advance(); // Consume 'if'
-
-        // Expect '('
         self.expect_token(Token::LParen)?;
-
-        // Parse condition
         let condition = self.parse_expression()?;
-
-        // Expect ')'
         self.expect_token(Token::RParen)?;
-
-        // Parse then-statement
         let then_stmt = self.parse_statement()?;
-
-        // Check for 'else'
         let else_stmt = if let Some(Token::ElseKw) = self.peek() {
-            self.advance(); // Consume 'else'
+            self.advance();
             Some(Box::new(self.parse_statement()?))
         } else {
             None
@@ -1056,6 +969,7 @@ impl Parser {
         }
     }
 
+    /// Just a helper to check if the token is what was expected
     fn check_token(&mut self, expected: Token) -> bool {
         if let Some(token) = self.peek() {
             token == &expected
@@ -1066,21 +980,20 @@ impl Parser {
 
     /// Parses an identifier
     pub fn parse_identifier(&mut self) -> Result<String, CompileError> {
-        // Clone token first to avoid borrowing issues
         let token_clone = self.peek()
             .ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?
             .clone();
 
         match token_clone {
             Token::Identifier(name) => {
-                self.advance(); // Now we can advance
+                self.advance();
                 Ok(name)
             },
             _ => Err(CompileError::ParserError(format!("Expected identifier, found {:?}", token_clone)))
         }
     }
 
-    /// Parses a type specifier (int, char, void, etc.)
+    /// Parses a type specifier like int, char, void...
     pub fn parse_type_specifier(&mut self) -> Result<TypeSpecifier, CompileError> {
         let token = self.peek().ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?;
 
@@ -1109,36 +1022,27 @@ impl Parser {
         }
     }
 
-    /// Parse a function parameter
+    /// Parse a function parameter declarator
     fn parse_parameter_declaration(&mut self) -> Result<AstNode, CompileError> {
-        // Parse the type specifier (int, char, etc.)
         let type_specifier = self.parse_type_specifier()?;
-
-        // Parse the parameter identifier
         let identifier = self.parse_identifier()?;
         let declarator = Box::new(AstNode::Identifier(identifier));
 
-        // Return Declaration node without requiring a semicolon
         Ok(AstNode::Declaration {
             type_spec: type_specifier,
             declarator,
-            initializer: None, // Parameters don't have initializers in standard C
+            initializer: None,
         })
     }
 
-    /// Parse a parameter list
+    /// Parse a parameter list so if multiple parameters are declared at once
     fn parse_parameter_list(&mut self) -> Result<Vec<Box<AstNode>>, CompileError> {
         let mut params = Vec::new();
-
-        // Empty parameter list
         if let Some(Token::RParen) = self.peek() {
             return Ok(params);
         }
-
-        // Parse first parameter
         params.push(Box::new(self.parse_parameter_declaration()?));
 
-        // Parse additional parameters separated by commas
         while let Some(Token::Comma) = self.peek() {
             self.advance(); // Consume the comma
             params.push(Box::new(self.parse_parameter_declaration()?));
