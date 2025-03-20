@@ -6,24 +6,19 @@ use crate::error::CompileError;
 pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     match node {
         AstNode::Identifier(name) => {
-            // Check if it's a variable reference
             if let Some(symbol) = context.lookup_symbol(name) {
-                // Extract all information we need from the symbol before mutably borrowing context
-                let type_info = symbol.type_info.clone(); // Clone to ensure ownership
-                let location = symbol.location.clone();   // Clone to avoid borrow issues
+                let type_info = symbol.type_info.clone();
+                let location = symbol.location.clone();
                 let is_float_or_double = type_info == "float" || type_info == "double";
 
-                // Get the appropriate register (floating-point for float/double, integer otherwise)
                 let result_reg = if is_float_or_double {
                     context.get_fp_register()
                 } else {
                     context.get_register()
                 };
 
-                // Use the extracted location information to generate code
                 match location {
                     StorageLocation::Stack(offset) => {
-                        // Load local variable from stack using the appropriate instruction
                         if type_info == "double" {
                             context.emit(&format!("    fld {}, {}(s0)", result_reg, offset));
                         } else if type_info == "float" {
@@ -33,26 +28,21 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                         }
                     },
                     StorageLocation::Global(label) => {
-                        // For global variables, use a temporary integer register to hold the address
                         let addr_reg = context.get_register();
-
-                        // Load global variable address into the address register
                         context.emit(&format!("    la {}, {}", addr_reg, label));
 
-                        // Load the value based on type
                         if type_info == "double" {
                             context.emit(&format!("    fld {}, 0({})", result_reg, addr_reg));
-                        } else if type_info == "float" {
+                        }
+                        else if type_info == "float" {
                             context.emit(&format!("    flw {}, 0({})", result_reg, addr_reg));
                         } else {
                             context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
                         }
 
-                        // Free the temporary address register
                         context.free_register(&addr_reg);
                     },
                     StorageLocation::Register(reg) => {
-                        // Variable is already in a register; move it if necessary
                         if result_reg != reg {
                             if type_info == "double" {
                                 context.emit(&format!("    fmv.d {}, {}", result_reg, reg));
@@ -66,8 +56,6 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 }
                 return Ok(result_reg);
             }
-
-            // Otherwise it might be a function name or something else
             Err(CompileError::CodegenError(format!("Unknown identifier in expression: {}", name)))
         },
         AstNode::Assignment { lhs, rhs } => {
@@ -132,6 +120,120 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                         return Err(CompileError::CodegenError(format!("Variable '{}' not found", name)))
                     }
                 },
+                AstNode::MemberAccess { object, member } => {
+                    let member_str = member.clone();
+
+                    match &**object {
+                        AstNode::Identifier(var_name) => {
+                            let var_name = var_name.clone();
+                            let (_type_info, location, field_offset, field_type) = {
+                                let symbol = context.lookup_symbol(&var_name).ok_or_else(|| CompileError::CodegenError(format!("Unknown variable: {}", var_name)))?;
+                                let type_info = symbol.type_info.clone();
+                                if !type_info.starts_with("struct ") {
+                                    return Err(CompileError::CodegenError(
+                                        format!("Variable {} is not a struct", var_name)
+                                    ));
+                                }
+
+                                let struct_name = type_info["struct ".len()..].to_string();
+                                let struct_def = context.struct_definitions.get(&struct_name).ok_or_else(|| CompileError::CodegenError(format!("Unknown struct type: {}", struct_name)))?;
+                                let field_info = struct_def.fields.get(&member_str).ok_or_else(|| CompileError::CodegenError(format!("Struct {} has no member named {}", struct_name, member_str)))?;
+                                (
+                                    type_info,
+                                    symbol.location.clone(),
+                                    field_info.offset as i32,
+                                    field_info.type_info.clone()
+                                )
+                            };
+
+                            match location {
+                                StorageLocation::Stack(stack_offset) => {
+                                    let member_offset = stack_offset + field_offset;
+                                    context.emit(&format!("    # Assign to struct member {}.{}", var_name, member_str));
+
+                                    match (field_type.as_str(), rhs_type.as_str()) {
+                                        ("int", "int") => {
+                                            context.emit(&format!("    sw {}, {}(s0)", rhs_reg, member_offset));
+                                        },
+                                        ("float", "float") => {
+                                            if rhs_reg.starts_with('f') {
+                                                context.emit(&format!("    fsw {}, {}(s0)", rhs_reg, member_offset));
+                                            } else {
+                                                return Err(CompileError::CodegenError(
+                                                    "Expected floating-point register for float assignment".to_string()
+                                                ));
+                                            }
+                                        },
+                                        ("double", "double") => {
+                                            if rhs_reg.starts_with('f') {
+                                                context.emit(&format!("    fsd {}, {}(s0)", rhs_reg, member_offset));
+                                            } else {
+                                                return Err(CompileError::CodegenError(
+                                                    "Expected floating-point register for double assignment".to_string()
+                                                ));
+                                            }
+                                        },
+                                        _ => {
+                                            return Err(CompileError::CodegenError(
+                                                format!("Type mismatch in struct member assignment: {} = {}", field_type, rhs_type)
+                                            ));
+                                        }
+                                    }
+                                },
+                                StorageLocation::Global(label) => {
+                                    let addr_reg = context.get_register();
+                                    context.emit(&format!("    # Assign to struct member {}.{}", var_name, member_str));
+
+                                    context.emit(&format!("    la {}, {}", addr_reg, label));
+                                    match (field_type.as_str(), rhs_type.as_str()) {
+                                        ("int", "int") => {
+                                            context.emit(&format!("    sw {}, {}({})", rhs_reg, field_offset, addr_reg));
+                                        },
+                                        ("float", "float") => {
+                                            if rhs_reg.starts_with('f') {
+                                                context.emit(&format!("    fsw {}, {}({})", rhs_reg, field_offset, addr_reg));
+                                            } else {
+                                                context.free_register(&addr_reg);
+                                                return Err(CompileError::CodegenError(
+                                                    "Expected floating-point register for float assignment".to_string()
+                                                ));
+                                            }
+                                        },
+                                        ("double", "double") => {
+                                            if rhs_reg.starts_with('f') {
+                                                context.emit(&format!("    fsd {}, {}({})", rhs_reg, field_offset, addr_reg));
+                                            } else {
+                                                context.free_register(&addr_reg);
+                                                return Err(CompileError::CodegenError(
+                                                    "Expected floating-point register for double assignment".to_string()
+                                                ));
+                                            }
+                                        },
+                                        _ => {
+                                            context.free_register(&addr_reg);
+                                            return Err(CompileError::CodegenError(
+                                                format!("Type mismatch in struct member assignment: {} = {}", field_type, rhs_type)
+                                            ));
+                                        }
+                                    }
+                                    context.free_register(&addr_reg);
+                                },
+                                _ => {
+                                    return Err(CompileError::CodegenError(
+                                        format!("Unsupported storage location for struct variable: {:?}", location)
+                                    ));
+                                }
+                            }
+
+                            return Ok(rhs_reg);
+                        },
+                        _ => {
+                            return Err(CompileError::CodegenError(
+                                "Complex struct member access for assignment not supported yet".to_string()
+                            ));
+                        }
+                    }
+                },
                 AstNode::ArraySubscript { .. } => {
                     let (base, indices) = collect_array_access(lhs)?;
                     let addr_reg = calculate_array_element_address(&base, &indices, context)?;
@@ -158,7 +260,7 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 generate_binary_operation(op, left, right, context)
             }
         },
-        AstNode::UnaryOperation { op, operand } => generate_unary_operation(op, operand, context),
+        AstNode::UnaryOperation { op: _op, operand } => generate_unary_operation(_op, operand, context),
         AstNode::IntConstant(value) => {
             let reg = context.get_register();
             context.emit(&format!("    li {}, {}", reg, value));
@@ -182,6 +284,9 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
         },
         AstNode::TernaryOperation { condition, true_expr, false_expr } => {
             generate_ternary_operation(condition, true_expr, false_expr, context)
+        },
+        AstNode::MemberAccess { object, member } => {
+            generate_member_access(object, member, context)
         },
         // Handle other expression types
         _ => Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node))),
@@ -667,22 +772,116 @@ fn generate_logical_operation(
 fn generate_assignment(left: &AstNode, right: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let right_reg = generate_expression(right, context)?;
 
-    if let AstNode::Identifier(var_name) = left {
-        if let Some((offset, _)) = context.get_variable(var_name) {
-            // Store in memory
-            context.emit(&format!("    sw {}, {}(s0)", right_reg, offset));
-            return Ok(right_reg);
+    match left {
+        AstNode::Identifier(var_name) => {
+            let var_name = var_name.clone(); // Memory safety shoutout rust
+
+            if let Some(symbol) = context.lookup_symbol(&var_name) {
+                let type_info = symbol.type_info.clone();
+                let location = symbol.location.clone();
+
+                match location {
+                    StorageLocation::Stack(offset) => {
+                        if type_info == "float" {
+                            if !right_reg.starts_with('f') {
+                                let fp_reg = context.get_fp_register();
+                                context.emit(&format!("    fcvt.s.w {}, {}", fp_reg, right_reg));
+                                context.emit(&format!("    fsw {}, {}(s0)", fp_reg, offset));
+                                context.free_fp_register(&fp_reg);
+                            } else {
+                                context.emit(&format!("    fsw {}, {}(s0)", right_reg, offset));
+                            }
+                        } else if type_info == "double" {
+                            if !right_reg.starts_with('f') {
+                                let fp_reg = context.get_fp_register();
+                                context.emit(&format!("    fcvt.d.w {}, {}", fp_reg, right_reg));
+                                context.emit(&format!("    fsd {}, {}(s0)", fp_reg, offset));
+                                context.free_fp_register(&fp_reg);
+                            } else {
+                                context.emit(&format!("    fsd {}, {}(s0)", right_reg, offset));
+                            }
+                        } else {
+                            context.emit(&format!("    sw {}, {}(s0)", right_reg, offset));
+                        }
+                    },
+                    StorageLocation::Global(label) => {
+                        let addr_reg = context.get_register();
+                        context.emit(&format!("    la {}, {}", addr_reg, label));
+
+                        if type_info == "float" {
+                            if !right_reg.starts_with('f') {
+                                let fp_reg = context.get_fp_register();
+                                context.emit(&format!("    fcvt.s.w {}, {}", fp_reg, right_reg));
+                                context.emit(&format!("    fsw {}, 0({})", fp_reg, addr_reg));
+                                context.free_fp_register(&fp_reg);
+                            } else {
+                                context.emit(&format!("    fsw {}, 0({})", right_reg, addr_reg));
+                            }
+                        } else if type_info == "double" {
+                            if !right_reg.starts_with('f') {
+                                let fp_reg = context.get_fp_register();
+                                context.emit(&format!("    fcvt.d.w {}, {}", fp_reg, right_reg));
+                                context.emit(&format!("    fsd {}, 0({})", fp_reg, addr_reg));
+                                context.free_fp_register(&fp_reg);
+                            } else {
+                                context.emit(&format!("    fsd {}, 0({})", right_reg, addr_reg));
+                            }
+                        } else {
+                            context.emit(&format!("    sw {}, 0({})", right_reg, addr_reg));
+                        }
+                        context.free_register(&addr_reg);
+                    },
+                    _ => return Err(CompileError::CodegenError(format!("Unsupported storage location: {:?}", location))),
+                }
+                return Ok(right_reg);
+            }
+        },
+        AstNode::MemberAccess { object, member } => {
+            if let AstNode::Identifier(var_name) = object.as_ref() {
+                let var_name = var_name.clone();
+                let member = member.clone();
+
+                if let Some(symbol) = context.lookup_symbol(&var_name) {
+                    let _type_info = symbol.type_info.clone();
+
+                    if !_type_info.starts_with("struct ") {
+                        return Err(CompileError::CodegenError(
+                            format!("Variable {} is not a struct", var_name)
+                        ));
+                    }
+
+                    let struct_name = _type_info["struct ".len()..].to_string();
+
+                    let field_info = if let Some(struct_def) = context.struct_definitions.get(&struct_name) {
+                        if let Some(field_info) = struct_def.fields.get(&member){
+                            field_info.type_info.clone()
+                        } else{
+                            return Err(CompileError::CodegenError(
+                                format!("Struct {} has no member named {}", struct_name, member)
+                            ));
+                        }
+                    } else{
+                        return Err(CompileError::CodegenError(
+                            format!("Unknown struct type: {}", struct_name)
+                        ));
+                    };
+                    return Ok(field_info);
+                } else {
+                    return Err(CompileError::CodegenError(format!("Unknown variable: {}", var_name)));
+                }
+            } else {
+                return Err(CompileError::CodegenError("Complex struct member access not supported".to_string()));
+            }
+        },
+        _ => {
+            let left_reg = generate_expression(left, context)?;
+
+            context.emit(&format!("    sw {}, 0({})", right_reg, left_reg));
+
+            context.free_register(&left_reg);
         }
     }
 
-    // Handle lvalue
-    let left_reg = generate_expression(left, context)?;
-
-    // Store right value to address in left_reg
-    context.emit(&format!("    sw {}, 0({})", right_reg, left_reg));
-
-    // Free the left register and return the right one
-    context.free_register(&left_reg);
     Ok(right_reg)
 }
 
@@ -1193,7 +1392,6 @@ fn generate_ternary_operation(
 
 // Helper function to determine expression type
 pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
-    println!("Debug node: {:?}", node);
     match node {
         AstNode::IntConstant(_) => Ok("int".to_string()),
         AstNode::FloatConstant(_) => Ok("float".to_string()),
@@ -1207,6 +1405,44 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 } else {
                     Err(CompileError::CodegenError(format!("Unknown identifier: {}", name)))
                 }
+            }
+        },
+        AstNode::MemberAccess { object, member } => {
+            if let AstNode::Identifier(var_name) = object.as_ref() {
+                let var_name = var_name.clone();
+                let member = member.clone();
+
+                let field_type = {
+                    if let Some(symbol) = context.lookup_symbol(&var_name){
+                        let type_info = symbol.type_info.clone();
+
+                        if !type_info.starts_with("struct "){
+                            return Err(CompileError::CodegenError(
+                                format!("Variable {} is not a struct", var_name)
+                            ));
+                        }
+                        let struct_name = type_info["struct ".len()..].to_string();
+
+                        if let Some(struct_def) = context.struct_definitions.get(&struct_name){
+                            if let Some(field_info) = struct_def.fields.get(&member) {
+                                field_info.type_info.clone()
+                            } else {
+                                return Err(CompileError::CodegenError(
+                                    format!("Struct {} has no member named {}", struct_name, member)
+                                ));
+                            }
+                        } else {
+                            return Err(CompileError::CodegenError(
+                                format!("Unknown struct type: {}", struct_name)
+                            ));
+                        }
+                    } else {
+                        return Err(CompileError::CodegenError(format!("Unknown variable: {}", var_name)));
+                    }
+                };
+                return Ok(field_type);
+            } else {
+                return Err(CompileError::CodegenError("Complex struct member access not supported".to_string()));
             }
         },
         AstNode::FunctionCall { function, .. } => {
@@ -1237,7 +1473,7 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 Ok("int".to_string())
             }
         },
-        AstNode::UnaryOperation { op, operand, .. } => {
+        AstNode::UnaryOperation { operand, .. } => {
             let operand_type = get_expression_type(operand, context)?;
             if operand_type == "float" {
                 Ok("float".to_string())
@@ -1249,5 +1485,99 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
         },
         // Handle other expression types
         _ => Ok("int".to_string()), // Default to int for unknown expressions
+    }
+}
+
+/// Generate code for a struct member access
+fn generate_member_access(object: &AstNode, member: &str, context: &mut CodeGenContext) -> Result<String, CompileError> {
+    let member_str = member.to_string();
+
+    match object {
+        AstNode::Identifier(var_name) => {
+            let var_name = var_name.clone();
+
+            let (_type_info, location, field_offset, field_type) = {
+                let symbol = context.lookup_symbol(&var_name).ok_or_else(|| CompileError::CodegenError(format!("Unknown variable: {}", var_name)))?;
+
+                let type_info = symbol.type_info.clone();
+                if !type_info.starts_with("struct "){
+                    return Err(CompileError::CodegenError(
+                        format!("Variable {} is not a struct", var_name)
+                    ));
+                }
+                let struct_name = type_info["struct ".len()..].to_string();
+
+                let struct_def = context.struct_definitions.get(&struct_name).ok_or_else(|| CompileError::CodegenError(format!("Unknown struct type: {}", struct_name)))?;
+                let field_info = struct_def.fields.get(&member_str).ok_or_else(|| CompileError::CodegenError(format!("Struct {} has no member named {}", struct_name, member_str)))?;
+
+                (
+                    type_info,
+                    symbol.location.clone(),
+                    field_info.offset as i32,
+                    field_info.type_info.clone()
+                )
+            };
+            let result_reg = context.get_register();
+
+            match location {
+                StorageLocation::Stack(stack_offset) => {
+                    let member_offset = stack_offset + field_offset;
+                    context.emit(&format!("    # Access struct member {}.{}", var_name, member_str));
+
+                    if field_type == "int" {
+                        context.emit(&format!("    lw {}, {}(s0)", result_reg, member_offset));
+                    } else if field_type == "float" {
+                        let fp_reg = context.get_fp_register();
+                        context.emit(&format!("    flw {}, {}(s0)", fp_reg, member_offset));
+                        context.free_register(&result_reg);
+                        return Ok(fp_reg);
+                    } else if field_type == "double" {
+                        let fp_reg = context.get_fp_register();
+                        context.emit(&format!("    fld {}, {}(s0)", fp_reg, member_offset));
+                        context.free_register(&result_reg);
+                        return Ok(fp_reg);
+                    } else {
+                        context.emit(&format!("    lw {}, {}(s0)", result_reg, member_offset));
+                    }
+                },
+                StorageLocation::Global(label) => {
+                    let addr_reg = context.get_register();
+                    context.emit(&format!("    # Access struct member {}.{}", var_name, member_str));
+                    context.emit(&format!("    la {}, {}", addr_reg, label));
+
+                    if field_type == "int" {
+                        context.emit(&format!("    lw {}, {}({})", result_reg, field_offset, addr_reg));
+                    } else if field_type == "float" {
+                        let fp_reg = context.get_fp_register();
+                        context.emit(&format!("    flw {}, {}({})", fp_reg, field_offset, addr_reg));
+                        context.free_register(&result_reg);
+                        context.free_register(&addr_reg);
+                        return Ok(fp_reg);
+                    } else if field_type == "double" {
+                        let fp_reg = context.get_fp_register();
+                        context.emit(&format!("    fld {}, {}({})", fp_reg, field_offset, addr_reg));
+                        context.free_register(&result_reg);
+                        context.free_register(&addr_reg);
+                        return Ok(fp_reg);
+                    } else {
+                        context.emit(&format!("    lw {}, {}({})", result_reg, field_offset, addr_reg));
+                    }
+                    context.free_register(&addr_reg);
+                },
+                _ => {
+                    context.free_register(&result_reg);
+                    return Err(CompileError::CodegenError(
+                        format!("Unsupported storage location for struct variable: {:?}", location)
+                    ));
+                }
+            }
+
+            Ok(result_reg)
+        },
+        _ => {
+            Err(CompileError::CodegenError(
+                "Complex struct member access not supported yet".to_string()
+            ))
+        }
     }
 }

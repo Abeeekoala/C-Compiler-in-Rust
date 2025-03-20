@@ -151,6 +151,11 @@ pub enum AstNode {
         type_spec: TypeSpecifier,
         name: String,
     },
+    /// Member access for structs
+    MemberAccess {
+        object: Box<AstNode>,
+        member: String,
+    },
 }
 
 /// Binary operators

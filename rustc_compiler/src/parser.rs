@@ -996,7 +996,14 @@ impl Parser {
                         operand: Box::new(expr),
                     };
                 },
-                // Later adding support for member access (. and ->)
+                Some(Token::Dot) => {
+                    self.advance();
+                    let member = self.parse_identifier()?;
+                    expr = AstNode::MemberAccess {
+                        object: Box::new(expr),
+                        member,
+                    };
+                },
                 _ => break,
             }
         }
