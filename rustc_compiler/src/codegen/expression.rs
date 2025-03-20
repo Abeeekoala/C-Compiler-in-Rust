@@ -329,19 +329,38 @@ fn generate_unary_operation(
     match op {
         // Unary plus: doesn't change the value
         "+" => {
-            // Just evaluate the operand
             generate_expression(operand, context)
         },
 
         // Unary minus: negate the value
         "-" => {
+            let operand_type = get_expression_type(operand, context)?;
             let operand_reg = generate_expression(operand, context)?;
-            context.emit(&format!("    neg {0}, {0}", operand_reg));
+            match operand_type.as_str() {
+                "int" => {
+                    context.emit(&format!("    neg {0}, {0}", operand_reg));
+                },
+                "float" => {
+                    context.emit(&format!("    fneg.s {0}, {0}", operand_reg));
+                },
+                "double" => {
+                    context.emit(&format!("    fneg.d {0}, {0}", operand_reg));
+                },
+                _ => return Err(CompileError::CodegenError(format!(
+                    "Unary minus not supported for type: {}", operand_type
+                ))),
+            }
             Ok(operand_reg)
         },
 
         // Bitwise NOT
         "~" => {
+            let operand_type = get_expression_type(operand, context)?;
+            if operand_type != "int" {
+                return Err(CompileError::CodegenError(
+                    "Bitwise NOT only supported for integers".to_string()
+                ));
+            }
             let operand_reg = generate_expression(operand, context)?;
             context.emit(&format!("    not {0}, {0}", operand_reg));
             Ok(operand_reg)
@@ -349,29 +368,67 @@ fn generate_unary_operation(
 
         // Logical NOT
         "!" => {
+            let operand_type = get_expression_type(operand, context)?;
             let operand_reg = generate_expression(operand, context)?;
-            // Set to 1 if operand is 0, otherwise set to 0
-            context.emit(&format!("    seqz {0}, {0}", operand_reg));
-            Ok(operand_reg)
+            let result_reg = context.get_register(); // Integer result (0 or 1)
+            match operand_type.as_str() {
+                "int" => {
+                    context.emit(&format!("    seqz {}, {}", result_reg, operand_reg));
+                },
+                "float" => {
+                    context.emit(&format!("    fmv.s.x f0, zero")); // 0.0 in f0
+                    context.emit(&format!("    feq.s {}, {}, f0", result_reg, operand_reg));
+                },
+                "double" => {
+                    context.emit(&format!("    fmv.d.x f0, zero")); // 0.0 in f0
+                    context.emit(&format!("    feq.d {}, {}, f0", result_reg, operand_reg));
+                },
+                _ => return Err(CompileError::CodegenError(format!(
+                    "Logical NOT not supported for type: {}", operand_type
+                ))),
+            }
+            if operand_type == "int" {
+                context.free_register(&operand_reg);
+            } else {
+                context.free_fp_register(&operand_reg);
+            }
+            Ok(result_reg)
         },
 
         // Pre-increment: increment operand, then return new value
         "++" => {
             if let AstNode::Identifier(var_name) = operand {
-                if let Some((offset, _)) = context.get_variable(var_name) {
-                    let result_reg = context.get_register();
-
-                    // Load current value
-                    context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
-
-                    // Increment
-                    context.emit(&format!("    addi {}, {}, 1", result_reg, result_reg));
-
-                    // Store back
-                    context.emit(&format!("    sw {}, {}(s0)", result_reg, offset));
-
-                    // Result is the new value (already in result_reg)
-                    return Ok(result_reg);
+                if let Some((offset, type_info)) = context.get_variable(var_name) {
+                    match type_info.as_str() {
+                        "int" => {
+                            let result_reg = context.get_register();
+                            context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    addi {}, {}, 1", result_reg, result_reg));
+                            context.emit(&format!("    sw {}, {}(s0)", result_reg, offset));
+                            return Ok(result_reg);
+                        },
+                        "float" => {
+                            let result_reg = context.get_fp_register();
+                            context.emit(&format!("    flw {}, {}(s0)", result_reg, offset));
+                            let one_reg = generate_float_constant(1.0, context)?;
+                            context.emit(&format!("    fadd.s {}, {}, {}", result_reg, result_reg, one_reg));
+                            context.emit(&format!("    fsw {}, {}(s0)", result_reg, offset));
+                            context.free_fp_register(&one_reg);
+                            return Ok(result_reg);
+                        },
+                        "double" => {
+                            let result_reg = context.get_fp_register();
+                            context.emit(&format!("    fld {}, {}(s0)", result_reg, offset));
+                            let one_reg = generate_double_constant(1.0, context)?;
+                            context.emit(&format!("    fadd.d {}, {}, {}", result_reg, result_reg, one_reg));
+                            context.emit(&format!("    fsd {}, {}(s0)", result_reg, offset));
+                            context.free_fp_register(&one_reg);
+                            return Ok(result_reg);
+                        },
+                        _ => return Err(CompileError::CodegenError(format!(
+                            "Increment not supported for type: {}", type_info
+                        ))),
+                    }
                 }
             }
             Err(CompileError::CodegenError("Invalid operand for ++ operation".to_string()))
@@ -380,20 +437,37 @@ fn generate_unary_operation(
         // Pre-decrement: decrement operand, then return new value
         "--" => {
             if let AstNode::Identifier(var_name) = operand {
-                if let Some((offset, _)) = context.get_variable(var_name) {
-                    let result_reg = context.get_register();
-
-                    // Load current value
-                    context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
-
-                    // Decrement
-                    context.emit(&format!("    addi {}, {}, -1", result_reg, result_reg));
-
-                    // Store back
-                    context.emit(&format!("    sw {}, {}(s0)", result_reg, offset));
-
-                    // Result is the new value (already in result_reg)
-                    return Ok(result_reg);
+                if let Some((offset, type_info)) = context.get_variable(var_name) {
+                    match type_info.as_str() {
+                        "int" => {
+                            let result_reg = context.get_register();
+                            context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    addi {}, {}, -1", result_reg, result_reg));
+                            context.emit(&format!("    sw {}, {}(s0)", result_reg, offset));
+                            return Ok(result_reg);
+                        },
+                        "float" => {
+                            let result_reg = context.get_fp_register();
+                            context.emit(&format!("    flw {}, {}(s0)", result_reg, offset));
+                            let minus_one_reg = generate_float_constant(-1.0, context)?;
+                            context.emit(&format!("    fadd.s {}, {}, {}", result_reg, result_reg, minus_one_reg));
+                            context.emit(&format!("    fsw {}, {}(s0)", result_reg, offset));
+                            context.free_fp_register(&minus_one_reg);
+                            return Ok(result_reg);
+                        },
+                        "double" => {
+                            let result_reg = context.get_fp_register();
+                            context.emit(&format!("    fld {}, {}(s0)", result_reg, offset));
+                            let minus_one_reg = generate_double_constant(-1.0, context)?;
+                            context.emit(&format!("    fadd.d {}, {}, {}", result_reg, result_reg, minus_one_reg));
+                            context.emit(&format!("    fsd {}, {}(s0)", result_reg, offset));
+                            context.free_fp_register(&minus_one_reg);
+                            return Ok(result_reg);
+                        },
+                        _ => return Err(CompileError::CodegenError(format!(
+                            "Decrement not supported for type: {}", type_info
+                        ))),
+                    }
                 }
             }
             Err(CompileError::CodegenError("Invalid operand for -- operation".to_string()))
@@ -402,27 +476,46 @@ fn generate_unary_operation(
         // Post-increment: return original value, then increment
         "post++" => {
             if let AstNode::Identifier(var_name) = operand {
-                if let Some((offset, _)) = context.get_variable(var_name) {
-                    let result_reg = context.get_register();
-                    let temp_reg = context.get_register();
-
-                    // Load current value
-                    context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
-
-                    // Copy to temp register
-                    context.emit(&format!("    mv {}, {}", temp_reg, result_reg));
-
-                    // Increment temp
-                    context.emit(&format!("    addi {}, {}, 1", temp_reg, temp_reg));
-
-                    // Store back the incremented value
-                    context.emit(&format!("    sw {}, {}(s0)", temp_reg, offset));
-
-                    // Free temp register
-                    context.free_register(&temp_reg);
-
-                    // Result is the original value (in result_reg)
-                    return Ok(result_reg);
+                if let Some((offset, type_info)) = context.get_variable(var_name) {
+                    match type_info.as_str() {
+                        "int" => {
+                            let result_reg = context.get_register();
+                            let temp_reg = context.get_register();
+                            context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    mv {}, {}", temp_reg, result_reg));
+                            context.emit(&format!("    addi {}, {}, 1", temp_reg, temp_reg));
+                            context.emit(&format!("    sw {}, {}(s0)", temp_reg, offset));
+                            context.free_register(&temp_reg);
+                            return Ok(result_reg);
+                        },
+                        "float" => {
+                            let result_reg = context.get_fp_register();
+                            let temp_reg = context.get_fp_register();
+                            context.emit(&format!("    flw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    fmv.s {}, {}", temp_reg, result_reg));
+                            let one_reg = generate_float_constant(1.0, context)?;
+                            context.emit(&format!("    fadd.s {}, {}, {}", temp_reg, temp_reg, one_reg));
+                            context.emit(&format!("    fsw {}, {}(s0)", temp_reg, offset));
+                            context.free_fp_register(&temp_reg);
+                            context.free_fp_register(&one_reg);
+                            return Ok(result_reg);
+                        },
+                        "double" => {
+                            let result_reg = context.get_fp_register();
+                            let temp_reg = context.get_fp_register();
+                            context.emit(&format!("    fld {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    fmv.d {}, {}", temp_reg, result_reg));
+                            let one_reg = generate_double_constant(1.0, context)?;
+                            context.emit(&format!("    fadd.d {}, {}, {}", temp_reg, temp_reg, one_reg));
+                            context.emit(&format!("    fsd {}, {}(s0)", temp_reg, offset));
+                            context.free_fp_register(&temp_reg);
+                            context.free_fp_register(&one_reg);
+                            return Ok(result_reg);
+                        },
+                        _ => return Err(CompileError::CodegenError(format!(
+                            "Post-increment not supported for type: {}", type_info
+                        ))),
+                    }
                 }
             }
             Err(CompileError::CodegenError("Invalid operand for post++ operation".to_string()))
@@ -431,27 +524,46 @@ fn generate_unary_operation(
         // Post-decrement: return original value, then decrement
         "post--" => {
             if let AstNode::Identifier(var_name) = operand {
-                if let Some((offset, _)) = context.get_variable(var_name) {
-                    let result_reg = context.get_register();
-                    let temp_reg = context.get_register();
-
-                    // Load current value
-                    context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
-
-                    // Copy to temp register
-                    context.emit(&format!("    mv {}, {}", temp_reg, result_reg));
-
-                    // Decrement temp
-                    context.emit(&format!("    addi {}, {}, -1", temp_reg, temp_reg));
-
-                    // Store back the decremented value
-                    context.emit(&format!("    sw {}, {}(s0)", temp_reg, offset));
-
-                    // Free temp register
-                    context.free_register(&temp_reg);
-
-                    // Result is the original value (in result_reg)
-                    return Ok(result_reg);
+                if let Some((offset, type_info)) = context.get_variable(var_name) {
+                    match type_info.as_str() {
+                        "int" => {
+                            let result_reg = context.get_register();
+                            let temp_reg = context.get_register();
+                            context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    mv {}, {}", temp_reg, result_reg));
+                            context.emit(&format!("    addi {}, {}, -1", temp_reg, temp_reg));
+                            context.emit(&format!("    sw {}, {}(s0)", temp_reg, offset));
+                            context.free_register(&temp_reg);
+                            return Ok(result_reg);
+                        },
+                        "float" => {
+                            let result_reg = context.get_fp_register();
+                            let temp_reg = context.get_fp_register();
+                            context.emit(&format!("    flw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    fmv.s {}, {}", temp_reg, result_reg));
+                            let minus_one_reg = generate_float_constant(-1.0, context)?;
+                            context.emit(&format!("    fadd.s {}, {}, {}", temp_reg, temp_reg, minus_one_reg));
+                            context.emit(&format!("    fsw {}, {}(s0)", temp_reg, offset));
+                            context.free_fp_register(&temp_reg);
+                            context.free_fp_register(&minus_one_reg);
+                            return Ok(result_reg);
+                        },
+                        "double" => {
+                            let result_reg = context.get_fp_register();
+                            let temp_reg = context.get_fp_register();
+                            context.emit(&format!("    fld {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    fmv.d {}, {}", temp_reg, result_reg));
+                            let minus_one_reg = generate_double_constant(-1.0, context)?;
+                            context.emit(&format!("    fadd.d {}, {}, {}", temp_reg, temp_reg, minus_one_reg));
+                            context.emit(&format!("    fsd {}, {}(s0)", temp_reg, offset));
+                            context.free_fp_register(&temp_reg);
+                            context.free_fp_register(&minus_one_reg);
+                            return Ok(result_reg);
+                        },
+                        _ => return Err(CompileError::CodegenError(format!(
+                            "Post-decrement not supported for type: {}", type_info
+                        ))),
+                    }
                 }
             }
             Err(CompileError::CodegenError("Invalid operand for post-- operation".to_string()))
@@ -461,16 +573,12 @@ fn generate_unary_operation(
         "*" => {
             let addr_reg = generate_expression(operand, context)?;
             let result_reg = context.get_register();
-
-            // Load from address in addr_reg
             context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
-
-            // Free the address register if different from result
             if addr_reg != result_reg {
                 context.free_register(&addr_reg);
             }
-
             Ok(result_reg)
+            // Note: Currently assumes integer pointers. For float/double, use flw/fld with type info.
         },
 
         // Address-of operator
@@ -478,10 +586,7 @@ fn generate_unary_operation(
             if let AstNode::Identifier(var_name) = operand {
                 if let Some((offset, _)) = context.get_variable(var_name) {
                     let result_reg = context.get_register();
-
-                    // Calculate address: frame pointer + offset
                     context.emit(&format!("    addi {}, s0, {}", result_reg, offset));
-
                     return Ok(result_reg);
                 }
             }
@@ -600,7 +705,7 @@ fn generate_function_call(
     for (i, arg) in args.iter().enumerate().take(8) {
         let arg_type = get_expression_type(arg, context)?;
         let is_float = arg_type == "float" || arg_type == "double";
-
+        println!("Debug arg{}: arg_type {}, for function call {}", i, arg_type, func_name);
         if is_float {
             // Floating-point arguments go in fa0-fa7
             if let AstNode::FloatConstant(value) = &**arg {
@@ -642,6 +747,7 @@ fn generate_function_call(
                 if arg_reg.starts_with('f') {
                     // Floating-point register, need to convert to integer
                     context.emit(&format!("    fcvt.w.s a{}, {}", i, arg_reg));
+                    println!("Debug fcvt.w.s a{}, {} for function call {}", i, arg_reg, func_name);
                     context.free_fp_register(&arg_reg);
                 } else if arg_reg != format!("a{}", i) {
                     context.emit(&format!("    mv a{}, {}", i, arg_reg));
@@ -807,6 +913,18 @@ fn generate_float_constant(value: f64, context: &mut CodeGenContext) -> Result<S
     Ok(reg)
 }
 
+fn generate_double_constant(value: f64, context: &mut CodeGenContext) -> Result<String, CompileError> {
+    let reg = context.get_fp_register();
+    let label = context.generate_label("double_const");
+    context.emit_data(&format!("{}:", label));
+    context.emit_data(&format!("    .double {}", value));
+    let temp_reg = context.get_register();
+    context.emit(&format!("    la {}, {}", temp_reg, label));
+    context.emit(&format!("    fld {}, 0({})", reg, temp_reg));
+    context.free_register(&temp_reg);
+    Ok(reg)
+}
+
 // Add a new function for floating-point binary operations
 fn generate_fp_binary_operation(
     op: &str,
@@ -819,11 +937,10 @@ fn generate_fp_binary_operation(
     let right_reg = generate_expression(right, context)?;
 
     // Determine if we need to convert integer operands to floating-point
-    let left_type = get_expression_type(left, context)?;
+    let left_type = get_expression_type(left, context)?;  // For debugging or later use
     let right_type = get_expression_type(right, context)?;
 
-    let left_fp_reg = if !left_reg.starts_with('f') && (left_type == "float" || left_type == "double") {
-        // Convert integer to float if needed
+    let left_fp_reg = if !left_reg.starts_with('f') {
         let fp_reg = context.get_fp_register();
         context.emit(&format!("    fcvt.s.w {}, {}", fp_reg, left_reg));
         context.free_register(&left_reg);
@@ -832,8 +949,7 @@ fn generate_fp_binary_operation(
         left_reg
     };
 
-    let right_fp_reg = if !right_reg.starts_with('f') && (right_type == "float" || right_type == "double") {
-        // Convert integer to float if needed
+    let right_fp_reg = if !right_reg.starts_with('f') {
         let fp_reg = context.get_fp_register();
         context.emit(&format!("    fcvt.s.w {}, {}", fp_reg, right_reg));
         context.free_register(&right_reg);
@@ -1077,6 +1193,7 @@ fn generate_ternary_operation(
 
 // Helper function to determine expression type
 pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
+    println!("Debug node: {:?}", node);
     match node {
         AstNode::IntConstant(_) => Ok("int".to_string()),
         AstNode::FloatConstant(_) => Ok("float".to_string()),
@@ -1116,6 +1233,16 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 Ok("double".to_string())
             } else if left_type == "float" || right_type == "float" {
                 Ok("float".to_string())
+            } else {
+                Ok("int".to_string())
+            }
+        },
+        AstNode::UnaryOperation { op, operand, .. } => {
+            let operand_type = get_expression_type(operand, context)?;
+            if operand_type == "float" {
+                Ok("float".to_string())
+            } else if operand_type == "double" {
+                Ok("double".to_string())
             } else {
                 Ok("int".to_string())
             }
