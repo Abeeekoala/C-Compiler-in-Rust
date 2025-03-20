@@ -9,35 +9,40 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             // Check if it's a variable reference
             if let Some(symbol) = context.lookup_symbol(name) {
                 // Extract all information we need from the symbol before mutably borrowing context
-                let is_float = symbol.type_info == "float" || symbol.type_info == "double";
-                let location = symbol.location.clone(); // Clone to avoid borrow issues
+                let type_info = symbol.type_info.clone(); // Clone to ensure ownership
+                let location = symbol.location.clone();   // Clone to avoid borrow issues
+                let is_float_or_double = type_info == "float" || type_info == "double";
 
-                // Now we can get registers (which mutably borrow context)
-                let result_reg = if is_float {
+                // Get the appropriate register (floating-point for float/double, integer otherwise)
+                let result_reg = if is_float_or_double {
                     context.get_fp_register()
                 } else {
                     context.get_register()
                 };
 
-                // Now use the extracted location information
+                // Use the extracted location information to generate code
                 match location {
                     StorageLocation::Stack(offset) => {
                         // Load local variable from stack using the appropriate instruction
-                        if is_float {
+                        if type_info == "double" {
+                            context.emit(&format!("    fld {}, {}(s0)", result_reg, offset));
+                        } else if type_info == "float" {
                             context.emit(&format!("    flw {}, {}(s0)", result_reg, offset));
                         } else {
                             context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
                         }
                     },
                     StorageLocation::Global(label) => {
-                        // For global variables, we need a temporary integer register to hold the address
+                        // For global variables, use a temporary integer register to hold the address
                         let addr_reg = context.get_register();
 
-                        // Load global variable address
+                        // Load global variable address into the address register
                         context.emit(&format!("    la {}, {}", addr_reg, label));
 
-                        // Load the value using the appropriate instruction
-                        if is_float {
+                        // Load the value based on type
+                        if type_info == "double" {
+                            context.emit(&format!("    fld {}, 0({})", result_reg, addr_reg));
+                        } else if type_info == "float" {
                             context.emit(&format!("    flw {}, 0({})", result_reg, addr_reg));
                         } else {
                             context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
@@ -47,9 +52,11 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                         context.free_register(&addr_reg);
                     },
                     StorageLocation::Register(reg) => {
-                        // Variable is already in a register
+                        // Variable is already in a register; move it if necessary
                         if result_reg != reg {
-                            if is_float {
+                            if type_info == "double" {
+                                context.emit(&format!("    fmv.d {}, {}", result_reg, reg));
+                            } else if type_info == "float" {
                                 context.emit(&format!("    fmv.s {}, {}", result_reg, reg));
                             } else {
                                 context.emit(&format!("    mv {}, {}", result_reg, reg));
@@ -113,6 +120,10 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                                     ));
                                 };
                             },
+                            ("double", "double") => {
+                                context.emit(&format!("    fsd {}, {}(s0)", rhs_reg, offset));
+                                return Ok(rhs_reg)
+                            },
                             _ => return Err(CompileError::CodegenError(
                                 format!("Type mismatch in assignment: {} = {}", lhs_type, rhs_type)
                             )),
@@ -139,9 +150,10 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             let left_type = get_expression_type(left, context)?;
             let right_type = get_expression_type(right, context)?;
 
-            if left_type == "float" || left_type == "double" ||
-               right_type == "float" || right_type == "double" {
+            if left_type == "float" || right_type == "float" {
                 generate_fp_binary_operation(op, left, right, context)
+            } else if left_type == "double" || right_type == "double" {
+                generate_double_binary_operation(op, left, right, context)
             } else {
                 generate_binary_operation(op, left, right, context)
             }
@@ -903,6 +915,130 @@ fn generate_fp_binary_operation(
 
     Ok(result_reg)
 }
+
+fn generate_double_binary_operation(
+    op: &str,
+    left: &AstNode,
+    right: &AstNode,
+    context: &mut CodeGenContext
+) -> Result<String, CompileError> {
+    // Generate code for operands
+    let left_reg = generate_expression(left, context)?;
+    let right_reg = generate_expression(right, context)?;
+
+    // Determine operand types (e.g., "double" or "float")
+    let left_type = get_expression_type(left, context)?;
+    let right_type = get_expression_type(right, context)?;
+
+    // Convert left operand to double if needed
+    let left_fp_reg = if !left_reg.starts_with('f') && left_type == "double" {
+        let fp_reg = context.get_fp_register();
+        context.emit(&format!("    fcvt.d.w {}, {}", fp_reg, left_reg));
+        context.free_register(&left_reg);
+        fp_reg
+    } else if !left_reg.starts_with('f') && left_type == "float" {
+        // Convert single precision float to double precision
+        let fp_reg = context.get_fp_register();
+        context.emit(&format!("    fcvt.d.s {}, {}", fp_reg, left_reg));
+        context.free_register(&left_reg);
+        fp_reg
+    } else {
+        left_reg
+    };
+
+    // Convert right operand to double if needed
+    let right_fp_reg = if !right_reg.starts_with('f') && right_type == "double" {
+        let fp_reg = context.get_fp_register();
+        context.emit(&format!("    fcvt.d.w {}, {}", fp_reg, right_reg));
+        context.free_register(&right_reg);
+        fp_reg
+    } else if !right_reg.starts_with('f') && right_type == "float" {
+        // Convert single precision float to double precision
+        let fp_reg = context.get_fp_register();
+        context.emit(&format!("    fcvt.d.s {}, {}", fp_reg, right_reg));
+        context.free_register(&right_reg);
+        fp_reg
+    } else {
+        right_reg
+    };
+
+    // Handle floating-point operations using double-precision instructions
+    let result_reg = match op {
+        "+" => {
+            context.emit(&format!("    fadd.d {}, {}, {}", left_fp_reg, left_fp_reg, right_fp_reg));
+            left_fp_reg
+        },
+        "-" => {
+            context.emit(&format!("    fsub.d {}, {}, {}", left_fp_reg, left_fp_reg, right_fp_reg));
+            left_fp_reg
+        },
+        "*" => {
+            context.emit(&format!("    fmul.d {}, {}, {}", left_fp_reg, left_fp_reg, right_fp_reg));
+            left_fp_reg
+        },
+        "/" => {
+            context.emit(&format!("    fdiv.d {}, {}, {}", left_fp_reg, left_fp_reg, right_fp_reg));
+            left_fp_reg
+        },
+        // Comparisons: the result is stored in an integer register
+        "==" => {
+            let int_reg = context.get_register();
+            context.emit(&format!("    feq.d {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
+            context.free_fp_register(&left_fp_reg);
+            context.free_fp_register(&right_fp_reg);
+            int_reg
+        },
+        "!=" => {
+            let int_reg = context.get_register();
+            context.emit(&format!("    feq.d {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
+            context.emit(&format!("    xori {}, {}, 1", int_reg, int_reg));
+            context.free_fp_register(&left_fp_reg);
+            context.free_fp_register(&right_fp_reg);
+            int_reg
+        },
+        "<" => {
+            let int_reg = context.get_register();
+            context.emit(&format!("    flt.d {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
+            context.free_fp_register(&left_fp_reg);
+            context.free_fp_register(&right_fp_reg);
+            int_reg
+        },
+        ">" => {
+            let int_reg = context.get_register();
+            context.emit(&format!("    flt.d {}, {}, {}", int_reg, right_fp_reg, left_fp_reg));
+            context.free_fp_register(&left_fp_reg);
+            context.free_fp_register(&right_fp_reg);
+            int_reg
+        },
+        "<=" => {
+            let int_reg = context.get_register();
+            context.emit(&format!("    fle.d {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
+            context.free_fp_register(&left_fp_reg);
+            context.free_fp_register(&right_fp_reg);
+            int_reg
+        },
+        ">=" => {
+            let int_reg = context.get_register();
+            context.emit(&format!("    fle.d {}, {}, {}", int_reg, right_fp_reg, left_fp_reg));
+            context.free_fp_register(&left_fp_reg);
+            context.free_fp_register(&right_fp_reg);
+            int_reg
+        },
+        _ => return Err(CompileError::CodegenError(format!("Invalid floating-point operation: {}", op))),
+    };
+
+    // Free the right register if it's not the same as the result
+    if right_fp_reg != result_reg {
+        if right_fp_reg.starts_with('f') {
+            context.free_fp_register(&right_fp_reg);
+        } else {
+            context.free_register(&right_fp_reg);
+        }
+    }
+
+    Ok(result_reg)
+}
+
 
 // Helper function to determine expression type
 pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {

@@ -395,8 +395,8 @@ impl CodeGenContext {
         self.emit("    addi s0, sp, 32");       // Set up new frame pointer
 
         // Save callee-saved registers we'll use
-        self.emit("    sw s1, 20(sp)");
-        self.emit("    sw s2, 16(sp)");
+        // self.emit("    sw s1, 20(sp)");
+        // self.emit("    sw s2, 16(sp)");
 
         // Reserve space for local variables (aligned to 16 bytes)
         self.emit("    addi sp, sp, -32");      // Initial space for locals
@@ -411,8 +411,8 @@ impl CodeGenContext {
         self.emit("    addi sp, sp, -32");      // Point to saved registers
 
         // Restore saved registers
-        self.emit("    lw s2, 16(sp)");
-        self.emit("    lw s1, 20(sp)");
+        // self.emit("    lw s2, 16(sp)");
+        // self.emit("    lw s1, 20(sp)");
         self.emit("    lw s0, 24(sp)");
         self.emit("    lw ra, 28(sp)");
 

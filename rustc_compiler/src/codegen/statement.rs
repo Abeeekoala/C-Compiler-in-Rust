@@ -349,7 +349,7 @@ fn generate_return_statement(node: &AstNode, context: &mut CodeGenContext) -> Re
             let result_reg = generate_expression(expr, context)?;
 
             // Handle floating-point vs integer return values
-            if expr_type == "float" || expr_type == "double" {
+            if expr_type == "float"{
                 if result_reg.starts_with('f') {
                     // Already in floating-point register, move to fa0 if needed
                     if result_reg != "fa0" {
@@ -360,6 +360,11 @@ fn generate_return_statement(node: &AstNode, context: &mut CodeGenContext) -> Re
                     // Integer register, convert to float in fa0
                     context.emit(&format!("    fcvt.s.w fa0, {}", result_reg));
                     context.free_register(&result_reg);
+                }
+            } else if expr_type == "double" {
+                if result_reg.starts_with('f') {
+                    context.emit(&format!("    fmv.d fa0, {}", result_reg));
+                    context.free_fp_register(&result_reg);
                 }
             } else {
                 // Integer return, move to a0 if needed
