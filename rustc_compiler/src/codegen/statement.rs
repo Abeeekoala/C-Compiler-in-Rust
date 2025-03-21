@@ -328,6 +328,7 @@ fn generate_declaration_item(node: &AstNode, context: &mut CodeGenContext) -> Re
             // Convert TypeSpecifier to base type string
             let base_type_str = match type_spec {
                 TypeSpecifier::Int => "int",
+                TypeSpecifier::Unsigned => "unsigned",
                 TypeSpecifier::Char => "char",
                 TypeSpecifier::Float => "float",
                 TypeSpecifier::Double => "double",

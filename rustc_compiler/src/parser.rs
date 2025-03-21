@@ -171,6 +171,10 @@ impl Parser {
                 self.advance();
                 Ok(TypeSpecifier::Int)
             },
+            Token::UnsignedKw => {
+                self.advance();
+                Ok(TypeSpecifier::Unsigned)
+            },
             Token::CharKw => {
                 self.advance();
                 Ok(TypeSpecifier::Char)
@@ -377,7 +381,7 @@ impl Parser {
             },
             // Type specifiers - this could be a declaration
             Some(Token::IntKw) | Some(Token::FloatKw) | Some(Token::CharKw) |
-            Some(Token::DoubleKw) | Some(Token::VoidKw) => {
+            Some(Token::DoubleKw) | Some(Token::VoidKw) | Some(Token::UnsignedKw) => {
                 self.parse_declaration()
             },
             // Handle struct declaration within function
@@ -883,7 +887,7 @@ impl Parser {
 
     /// Parse multiplicative expression
     fn parse_multiplicative_expression(&mut self) -> ParseResult {
-        let mut expr = self.parse_cast_expression()?;
+        let mut expr = self.parse_unary_expression()?;
 
         while let Some(token) = self.peek() {
             let op = match token {
@@ -894,7 +898,7 @@ impl Parser {
             };
 
             self.advance();
-            let right = self.parse_cast_expression()?;
+            let right = self.parse_unary_expression()?;
             expr = AstNode::BinaryOperation {
                 op: op.to_string(),
                 left: Box::new(expr),
@@ -903,13 +907,6 @@ impl Parser {
         }
 
         Ok(expr)
-    }
-
-    /// Parse type casting
-    fn parse_cast_expression(&mut self) -> ParseResult {
-        // For now, we'll skip cast expressions and just go to unary
-        // Later: Add support for type casting???
-        self.parse_unary_expression()
     }
 
     /// Parse unary expression
@@ -1210,6 +1207,16 @@ impl Parser {
             Token::DoubleKw => {
                 self.advance();
                 Ok(TypeSpecifier::Double)
+            },
+            Token::UnsignedKw => {
+                self.advance();
+                // Check if next token is int(optional)
+                if let Some(Token::IntKw) = self.peek() {
+                    self.advance();
+                    Ok(TypeSpecifier::Unsigned)
+                } else {
+                    Ok(TypeSpecifier::Unsigned)
+                }
             },
             Token::StructKw => {
                 self.advance();

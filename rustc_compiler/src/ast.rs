@@ -204,9 +204,8 @@ pub enum UnaryOperator {
 pub enum TypeSpecifier {
     Void,
     Char,
-    Short,
     Int,
-    Long,
+    Unsigned,
     Float,
     Double,
     Struct(String),
@@ -219,9 +218,8 @@ impl fmt::Display for TypeSpecifier {
         match self {
             TypeSpecifier::Void => write!(f, "void"),
             TypeSpecifier::Char => write!(f, "char"),
-            TypeSpecifier::Short => write!(f, "short"),
             TypeSpecifier::Int => write!(f, "int"),
-            TypeSpecifier::Long => write!(f, "long"),
+            TypeSpecifier::Unsigned => write!(f, "unsigned"),
             TypeSpecifier::Float => write!(f, "float"),
             TypeSpecifier::Double => write!(f, "double"),
             TypeSpecifier::Struct(name) => write!(f, "struct {}", name),

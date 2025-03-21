@@ -324,7 +324,7 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             } else if left_type == "double" || right_type == "double" {
                 generate_double_binary_operation(op, left, right, context)
             } else {
-                generate_binary_operation(op, left, right, context)
+                generate_binary_operation(op, left, right, &left_type, &right_type, context)
             }
         },
         AstNode::UnaryOperation { op: _op, operand } => generate_unary_operation(_op, operand, context),
@@ -420,6 +420,8 @@ fn generate_binary_operation(
     op: &str,
     left: &AstNode,
     right: &AstNode,
+    left_type: &str,
+    right_type: &str,
     context: &mut CodeGenContext
 ) -> Result<String, CompileError> {
     // Special handling for logical operators with short-circuit evaluation
@@ -427,91 +429,130 @@ fn generate_binary_operation(
         return generate_logical_operation(op, left, right, context);
     }
 
-    // Get types of operands first to check for pointer arithmetic
-    let left_type = get_expression_type(left, context)?;
-    let right_type = get_expression_type(right, context)?;
-
-    // Handle pointer arithmetic
+    // Handle pointer arithmetic (unchanged, as it’s type-driven already)
     if (op == "+" || op == "-") && (left_type.ends_with('*') || right_type.ends_with('*')) {
-        return generate_pointer_arithmetic(op, left, right, left_type, right_type, context);
+        return generate_pointer_arithmetic(op, left, right, left_type.to_string(), right_type.to_string(), context);
     }
+
+    // Compute common type for operations (C90: if either operand is unsigned, the result is unsigned)
+    let common_type = if left_type == "unsigned" || right_type == "unsigned" {
+        "unsigned"
+    } else {
+        "int" // Default to signed if both are "int" or untyped
+    };
 
     // Generate code for operands
     let left_reg = generate_expression(left, context)?;
     let right_reg = generate_expression(right, context)?;
 
-    // Handle comparison operators
+    // Handle operations based on type
     let result_reg = match op {
+        // Arithmetic operations
+        "+" => {
+            context.emit(&format!("    add {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            left_reg
+        }
+        "-" => {
+            context.emit(&format!("    sub {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            left_reg
+        }
+        "*" => {
+            context.emit(&format!("    mul {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            left_reg
+        }
+        "/" => {
+            if common_type == "unsigned" {
+                context.emit(&format!("    divu {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            } else {
+                context.emit(&format!("    div {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            }
+            left_reg
+        }
+        "%" => {
+            if common_type == "unsigned" {
+                context.emit(&format!("    remu {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            } else {
+                context.emit(&format!("    rem {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            }
+            left_reg
+        }
+        // Bitwise shifts
+        "<<" => {
+            context.emit(&format!("    sll {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            left_reg
+        }
+        ">>" => {
+            if left_type == "unsigned" {
+                context.emit(&format!("    srl {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            } else {
+                context.emit(&format!("    sra {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            }
+            left_reg
+        }
+        // Comparison operators
         "==" => {
             context.emit(&format!("    xor {0}, {1}, {2}", left_reg, left_reg, right_reg));
             context.emit(&format!("    seqz {0}, {0}", left_reg));
             left_reg
-        },
+        }
         "!=" => {
             context.emit(&format!("    xor {0}, {1}, {2}", left_reg, left_reg, right_reg));
             context.emit(&format!("    snez {0}, {0}", left_reg));
             left_reg
-        },
+        }
         "<" => {
-            context.emit(&format!("    slt {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            if common_type == "unsigned" {
+                context.emit(&format!("    sltu {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            } else {
+                context.emit(&format!("    slt {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            }
             left_reg
-        },
+        }
         ">" => {
-            context.emit(&format!("    slt {0}, {1}, {2}", left_reg, right_reg, left_reg));
+            if common_type == "unsigned" {
+                context.emit(&format!("    sltu {0}, {1}, {2}", left_reg, right_reg, left_reg));
+            } else {
+                context.emit(&format!("    slt {0}, {1}, {2}", left_reg, right_reg, left_reg));
+            }
             left_reg
-        },
+        }
         "<=" => {
-            context.emit(&format!("    slt {0}, {1}, {2}", left_reg, right_reg, left_reg));
-            context.emit(&format!("    xori {0}, {0}, 1", left_reg));
+            let temp_reg = context.get_register();
+            if common_type == "unsigned" {
+                context.emit(&format!("    sltu {0}, {1}, {2}", temp_reg, right_reg, left_reg));
+            } else {
+                context.emit(&format!("    slt {0}, {1}, {2}", temp_reg, right_reg, left_reg));
+            }
+            context.emit(&format!("    xori {0}, {0}, 1", temp_reg));
+            context.emit(&format!("    mv {0}, {1}", left_reg, temp_reg));
+            context.free_register(&temp_reg);
             left_reg
-        },
+        }
         ">=" => {
-            context.emit(&format!("    slt {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            context.emit(&format!("    xori {0}, {0}, 1", left_reg));
+            let temp_reg = context.get_register();
+            if common_type == "unsigned" {
+                context.emit(&format!("    sltu {0}, {1}, {2}", temp_reg, left_reg, right_reg));
+            } else {
+                context.emit(&format!("    slt {0}, {1}, {2}", temp_reg, left_reg, right_reg));
+            }
+            context.emit(&format!("    xori {0}, {0}, 1", temp_reg));
+            context.emit(&format!("    mv {0}, {1}", left_reg, temp_reg));
+            context.free_register(&temp_reg);
             left_reg
-        },
-        // Arithmetic operators
-        "+" => {
-            context.emit(&format!("    add {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            left_reg
-        },
-        "-" => {
-            context.emit(&format!("    sub {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            left_reg
-        },
-        "*" => {
-            context.emit(&format!("    mul {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            left_reg
-        },
-        "/" => {
-            context.emit(&format!("    div {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            left_reg
-        },
-        "%" => {
-            context.emit(&format!("    rem {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            left_reg
-        },
-        // Bitwise operators
+        }
+        // Bitwise operators (same for signed and unsigned)
         "&" => {
             context.emit(&format!("    and {0}, {1}, {2}", left_reg, left_reg, right_reg));
             left_reg
-        },
+        }
         "|" => {
             context.emit(&format!("    or {0}, {1}, {2}", left_reg, left_reg, right_reg));
             left_reg
-        },
+        }
         "^" => {
             context.emit(&format!("    xor {0}, {1}, {2}", left_reg, left_reg, right_reg));
             left_reg
-        },
-        "<<" => {
-            context.emit(&format!("    sll {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            left_reg
-        },
-        ">>" => {
-            context.emit(&format!("    sra {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            left_reg
-        },
+        }
         _ => return Err(CompileError::CodegenError(format!("Invalid binary operation: {}", op))),
     };
 
@@ -1893,9 +1934,8 @@ fn get_type_size(type_spec: &TypeSpecifier, pointer_level: usize, context: &mut 
 
     match type_spec {
         TypeSpecifier::Char => 1,
-        TypeSpecifier::Short => 2,
         TypeSpecifier::Int => 4,
-        TypeSpecifier::Long => 4,
+        TypeSpecifier::Unsigned => 4,
         TypeSpecifier::Float => 4,
         TypeSpecifier::Double => 8,
         TypeSpecifier::Void => 1, // Technically 0, but often 1 in C
@@ -1908,6 +1948,7 @@ fn get_type_size(type_spec: &TypeSpecifier, pointer_level: usize, context: &mut 
             }
         },
         TypeSpecifier::Enum(name) => 4,
+        _ => 4,
     }
 }
 
@@ -1919,9 +1960,8 @@ fn get_size_from_type_string(type_str: &str, context: &mut CodeGenContext) -> i3
 
     match type_str {
         "char" => 1,
-        "short" => 2,
         "int" => 4,
-        "long" => 4,
+        "unsigned" => 4,
         "float" => 4,
         "double" => 8,
         "void" => 1,
