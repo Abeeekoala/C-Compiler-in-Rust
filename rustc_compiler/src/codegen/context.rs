@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use crate::ast::TypeSpecifier;
-
+use crate::error::CompileError;
 /// Types of locations where variables can be stored
 #[derive(Debug, Clone)]
 pub enum StorageLocation {
@@ -82,6 +82,7 @@ pub struct CodeGenContext {
     pub function_signatures: HashMap<String, String>,
     pub struct_definitions: HashMap<String, StructDefinition>,
     pub typedef_map: HashMap<String, FullType>,
+    pub frame_sizes: Vec<usize>,  // Stack of frame sizes for nested functions
 }
 
 impl CodeGenContext {
@@ -111,6 +112,7 @@ impl CodeGenContext {
             function_signatures: HashMap::new(),
             struct_definitions: HashMap::new(),
             typedef_map: HashMap::new(),
+            frame_sizes: Vec::new(),
         }
     }
 
@@ -386,27 +388,46 @@ impl CodeGenContext {
 
     pub fn generate_function_prologue(&mut self) {
         self.in_function = true;
+        let frame_size = self.calculate_frame_size();
+        let aligned_frame_size = Self::align_to(frame_size, 16) + 16;
+        self.frame_sizes.push(aligned_frame_size);
 
-        self.emit("    addi sp, sp, -32");
-        self.emit("    sw ra, 28(sp)");
-        self.emit("    sw s0, 24(sp)");
-        self.emit("    addi s0, sp, 32");
-        self.emit("    addi sp, sp, -32");
-        self.stack_offset = -32;
+        self.emit(&format!("    addi sp, sp, -{}", aligned_frame_size));
+        self.emit(&format!("    sw ra, {}(sp)", aligned_frame_size - 4));
+        self.emit(&format!("    sw s0, {}(sp)", aligned_frame_size - 8));
+        self.emit(&format!("    addi s0, sp, {}", aligned_frame_size));
+        if aligned_frame_size > 0 {
+            self.emit(&format!("    addi sp, sp, -{}", aligned_frame_size));
+        }
+
+        self.stack_offset = -(aligned_frame_size as i32);
     }
 
     /// Generate the function epilogue with proper cleanup
     pub fn generate_function_epilogue(&mut self) {
-        // Deallocate local variables
+        let aligned_frame_size = match self.frame_sizes.pop() {
+            Some(size) => size,
+            None => {
+                let frame_size = self.calculate_frame_size();
+                Self::align_to(frame_size, 16) + 16
+            }
+        };
+
         self.emit("    mv sp, s0");
-        self.emit("    addi sp, sp, -32");
-        self.emit("    lw s0, 24(sp)");
-        self.emit("    lw ra, 28(sp)");
-        self.emit("    addi sp, sp, 32");
+        // Deallocate local variables
+        if aligned_frame_size > 0 {
+            self.emit(&format!("    addi sp, sp, -{}", aligned_frame_size));
+        }
+
+        self.emit(&format!("    lw s0, {}(sp)", aligned_frame_size - 8));
+        self.emit(&format!("    lw ra, {}(sp)", aligned_frame_size - 4));
+        self.emit(&format!("    addi sp, sp, {}", aligned_frame_size));
         self.emit("    ret");
 
-        self.in_function = false;
-        self.reset_temp_registers();
+        if self.frame_sizes.is_empty() {
+            self.in_function = false;
+            self.reset_temp_registers();
+        }
     }
 
     pub fn get_assembly(&self) -> String {
@@ -554,5 +575,72 @@ impl CodeGenContext {
             }
         }
         None
+    }
+
+    fn align_to(size: usize, alignment: usize) -> usize {
+        (size + alignment - 1) & !(alignment - 1)
+    }
+
+    fn calculate_frame_size(&self) -> usize {
+        let locals_size = self.calculate_locals_size();
+        let spills_size = self.calculate_register_spills_size();
+        locals_size + spills_size
+    }
+
+    fn calculate_locals_size(&self) -> usize {
+        // If we're not in a function, no locals to count
+        if !self.in_function {
+            return 0;
+        }
+
+        let mut total_size = 0;
+
+        // Iterate through all scopes in the current function
+        for scope in &self.symbols {
+            for symbol in scope.values() {
+                // Only count variables stored on the stack
+                if let StorageLocation::Stack(_) = symbol.location {
+                    // Add the size of this variable (already aligned)
+                    total_size += symbol.size;
+                }
+            }
+        }
+
+        // Return the total, which might need to be aligned at the call site
+        total_size
+    }
+
+    fn calculate_register_spills_size(&self) -> usize {
+        // Estimate space needed for register spills during function calls
+        // A simple heuristic could be based on the max number of used registers
+        let max_spill_count = self.used_temp_registers.len().max(self.used_fp_registers.len());
+
+        // Each register typically needs 4 bytes (32 bits) on RISC-V
+        max_spill_count * 4
+    }
+
+    pub fn get_type_size(&self, type_str: &str) -> Result<usize, CompileError> {
+        match type_str {
+            "int" => Ok(4),
+            "float" => Ok(4),
+            "double" => Ok(8),
+            "char" => Ok(1),
+            s if s.starts_with("struct ") => {
+                let struct_name = &s["struct ".len()..];
+                if let Some(struct_def) = self.struct_definitions.get(struct_name) {
+                    let total_size = struct_def.fields.values().map(|field| field.size).sum();
+                    Ok(total_size)
+                } else {
+                    Err(CompileError::CodegenError(format!("Undefined struct: {}", struct_name)))
+                }
+            },
+            _ => {
+                if let Some(resolved_type) = self.typedef_map.get(type_str) {
+                    self.get_type_size(&resolved_type.to_string())
+                } else {
+                    Err(CompileError::CodegenError(format!("Unknown type: {}", type_str)))
+                }
+            }
+        }
     }
 }

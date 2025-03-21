@@ -1051,6 +1051,14 @@ impl Parser {
                         member,
                     };
                 },
+                Some(Token::Arrow) => {
+                    self.advance();
+                    let member = self.parse_identifier()?;
+                    expr = AstNode::PointerMemberAccess {
+                        pointer: Box::new(expr),
+                        member,
+                    };
+                },
                 _ => break,
             }
         }

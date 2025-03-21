@@ -124,6 +124,10 @@ pub enum AstNode {
         object: Box<AstNode>,
         member: String,
     },
+    PointerMemberAccess {
+        pointer: Box<AstNode>,
+        member: String,
+    },
     PointerDeclarator {
         pointee: Box<AstNode>,
     },

@@ -16,25 +16,42 @@ pub fn generate_code(ast: &AstNode) -> Result<(String, CodeGenContext), CompileE
             function::generate_function(ast, &mut context)?;
         },
         AstNode::StructDefinition { name, fields } => {
-            let struct_fields: Vec<(String, String, usize)> = fields.iter()
-                .filter_map(|field| {
-                    if let AstNode::StructField { type_spec, name } = &**field {
-                        let field_type = match type_spec {
-                            TypeSpecifier::Int => "int",
-                            TypeSpecifier::Float => "float",
-                            TypeSpecifier::Double => "double",
-                            TypeSpecifier::Char => "char",
-                            _ => "unknown",
-                        };
-                        let field_size = match type_spec {
-                            TypeSpecifier::Double => 8,
-                            _ => 4,
-                        };
-                        Some((name.clone(), field_type.to_string(), field_size))
-                    } else {
-                        None
-                    }
-                }).collect();
+            let mut struct_fields = Vec::new();
+            for field in fields {
+                if let AstNode::StructField { type_spec, name } = &**field {
+                    let field_type = match type_spec {
+                        TypeSpecifier::Int => "int".to_string(),
+                        TypeSpecifier::Float => "float".to_string(),
+                        TypeSpecifier::Double => "double".to_string(),
+                        TypeSpecifier::Char => "char".to_string(),
+                        TypeSpecifier::Struct(struct_name) => {
+                            if context.struct_definitions.contains_key(struct_name) {
+                                format!("struct {}", struct_name)
+                            } else {
+                                return Err(CompileError::CodegenError(format!(
+                                    "Undefined struct: {}", struct_name
+                                )));
+                            }
+                        },
+                        TypeSpecifier::TypedefName(typedef_name) => {
+                            if let Some(resolved_type) = context.typedef_map.get(typedef_name) {
+                                resolved_type.clone().to_string()
+                            } else {
+                                return Err(CompileError::CodegenError(format!(
+                                    "Undefined typedef: {}", typedef_name
+                                )));
+                            }
+                        },
+                        _ => {
+                            return Err(CompileError::CodegenError(
+                                "Unsupported type specifier".to_string()
+                            ))
+                        }
+                    };
+                    let field_size = context.get_type_size(&field_type)?;
+                    struct_fields.push((name.clone(), field_type, field_size));
+                }
+            }
             context.register_struct(name.clone(), struct_fields);
         },
         AstNode::Declaration { .. } => {
@@ -47,25 +64,42 @@ pub fn generate_code(ast: &AstNode) -> Result<(String, CodeGenContext), CompileE
                         function::generate_function(node, &mut context)?;
                     },
                     AstNode::StructDefinition { name, fields } => {
-                        let struct_fields: Vec<(String, String, usize)> = fields.iter()
-                            .filter_map(|field| {
-                                if let AstNode::StructField { type_spec, name } = &**field {
-                                    let field_type = match type_spec {
-                                        TypeSpecifier::Int => "int",
-                                        TypeSpecifier::Float => "float",
-                                        TypeSpecifier::Double => "double",
-                                        TypeSpecifier::Char => "char",
-                                        _ => "unknown",
-                                    };
-                                    let field_size = match type_spec {
-                                        TypeSpecifier::Double => 8,
-                                        _ => 4,
-                                    };
-                                    Some((name.clone(), field_type.to_string(), field_size))
-                                } else {
-                                    None
-                                }
-                            }).collect();
+                        let mut struct_fields = Vec::new();
+                        for field in fields {
+                            if let AstNode::StructField { type_spec, name } = &**field {
+                                let field_type = match type_spec {
+                                    TypeSpecifier::Int => "int".to_string(),
+                                    TypeSpecifier::Float => "float".to_string(),
+                                    TypeSpecifier::Double => "double".to_string(),
+                                    TypeSpecifier::Char => "char".to_string(),
+                                    TypeSpecifier::Struct(struct_name) => {
+                                        if context.struct_definitions.contains_key(struct_name) {
+                                            format!("struct {}", struct_name)
+                                        } else {
+                                            return Err(CompileError::CodegenError(format!(
+                                                "Undefined struct: {}", struct_name
+                                            )));
+                                        }
+                                    },
+                                    TypeSpecifier::TypedefName(typedef_name) => {
+                                        if let Some(resolved_type) = context.typedef_map.get(typedef_name) {
+                                            resolved_type.clone().to_string()
+                                        } else {
+                                            return Err(CompileError::CodegenError(format!(
+                                                "Undefined typedef: {}", typedef_name
+                                            )));
+                                        }
+                                    },
+                                    _ => {
+                                        return Err(CompileError::CodegenError(
+                                            "Unsupported type specifier".to_string()
+                                        ))
+                                    }
+                                };
+                                let field_size = context.get_type_size(&field_type)?;
+                                struct_fields.push((name.clone(), field_type, field_size));
+                            }
+                        }
                         context.register_struct(name.clone(), struct_fields);
                     },
                     _ => {

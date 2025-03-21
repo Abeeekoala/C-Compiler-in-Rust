@@ -1020,7 +1020,7 @@ fn generate_assignment(left: &AstNode, right: &AstNode, context: &mut CodeGenCon
                     return Err(CompileError::CodegenError(format!("Unknown variable: {}", var_name)));
                 }
             } else {
-                return Err(CompileError::CodegenError("Complex struct member access not supported".to_string()));
+                return Err(CompileError::CodegenError(format!("Complex struct member access not supported; failed at {:?}, {:?}", object, member)));
             }
         },
         _ => {
@@ -1551,41 +1551,69 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
             }
         },
         AstNode::MemberAccess { object, member } => {
-            if let AstNode::Identifier(var_name) = object.as_ref() {
-                let var_name = var_name.clone();
-                let member = member.clone();
-
-                let field_type = {
-                    if let Some(symbol) = context.lookup_symbol(&var_name){
-                        let type_info = symbol.type_info.clone();
-
-                        if !type_info.starts_with("struct "){
-                            return Err(CompileError::CodegenError(
-                                format!("Variable {} is not a struct", var_name)
-                            ));
-                        }
-                        let struct_name = type_info["struct ".len()..].to_string();
-
-                        if let Some(struct_def) = context.struct_definitions.get(&struct_name){
-                            if let Some(field_info) = struct_def.fields.get(&member) {
-                                field_info.type_info.clone()
-                            } else {
-                                return Err(CompileError::CodegenError(
-                                    format!("Struct {} has no member named {}", struct_name, member)
-                                ));
-                            }
-                        } else {
-                            return Err(CompileError::CodegenError(
-                                format!("Unknown struct type: {}", struct_name)
-                            ));
-                        }
-                    } else {
-                        return Err(CompileError::CodegenError(format!("Unknown variable: {}", var_name)));
-                    }
-                };
-                return Ok(field_type);
+            // Recursively get the type of the object
+            let object_type = get_expression_type(object, context)?;
+            println!("Object type for {:?}: {:?}", object, object_type);
+            // Check if the object type is a struct or a pointer to a struct
+            let struct_name = if object_type.starts_with("struct ") {
+                object_type["struct ".len()..].to_string()
+            } else if object_type.ends_with('*') && object_type.starts_with("struct ") {
+                // Handle pointer to struct
+                object_type["struct ".len()..object_type.len() - 1].to_string()
             } else {
-                return Err(CompileError::CodegenError("Complex struct member access not supported".to_string()));
+                return Err(CompileError::CodegenError(format!(
+                    "Member access on non-struct type at {:?}: {}", object, object_type
+                )));
+            };
+
+            // Look up the struct definition and its field
+            if let Some(struct_def) = context.struct_definitions.get(&struct_name) {
+                if let Some(field_info) = struct_def.fields.get(member) {
+                    Ok(field_info.type_info.clone())
+                } else {
+                    Err(CompileError::CodegenError(format!(
+                        "Struct {} has no member named {}", struct_name, member
+                    )))
+                }
+            } else {
+                Err(CompileError::CodegenError(format!(
+                    "Unknown struct type: {}", struct_name
+                )))
+            }
+        },
+        AstNode::PointerMemberAccess { pointer, member } => {
+            // Recursively get the type of the pointer
+            let pointer_type = get_expression_type(pointer, context)?;
+            println!("Pointer type for {:?}: {:?}", pointer, pointer_type);
+            // Ensure it's a pointer type
+            if !pointer_type.ends_with('*') {
+                return Err(CompileError::CodegenError(format!(
+                    "Pointer member access (->) on non-pointer type: {}", pointer_type
+                )));
+            }
+
+            // Extract the base struct type (e.g., "struct Date" from "struct Date*")
+            let base_type = pointer_type.trim_end_matches('*');
+            if !base_type.starts_with("struct ") {
+                return Err(CompileError::CodegenError(format!(
+                    "Pointer member access on non-struct pointer type: {}", base_type
+                )));
+            }
+            let struct_name = base_type["struct ".len()..].to_string();
+            // Look up the struct definition and its field
+            if let Some(struct_def) = context.struct_definitions.get(&struct_name) {
+                if let Some(field_info) = struct_def.fields.get(member) {
+                    println!("Field info for {:?}: {:?}", member, field_info.type_info);
+                    Ok(field_info.type_info.clone())
+                } else {
+                    Err(CompileError::CodegenError(format!(
+                        "Struct {} has no member named {}", struct_name, member
+                    )))
+                }
+            } else {
+                Err(CompileError::CodegenError(format!(
+                    "Unknown struct type: {}", struct_name
+                )))
             }
         },
         AstNode::FunctionCall { function, .. } => {
