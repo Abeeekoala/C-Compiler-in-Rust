@@ -7,7 +7,12 @@ use crate::error::CompileError;
 pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     match node {
         AstNode::Identifier(name) => {
-            if let Some(symbol) = context.lookup_symbol(name) {
+            if let Some(enum_value) = context.lookup_enum_value(name) {
+                //enum value -> load to register
+                let reg = context.get_register();
+                context.emit(&format!("    li {}, {}", reg, enum_value));
+                return Ok(reg);
+            } else if let Some(symbol) = context.lookup_symbol(name) {
                 let type_info = symbol.type_info.clone();
                 let location = symbol.location.clone();
                 let is_float_or_double = type_info == "float" || type_info == "double";
@@ -1902,6 +1907,7 @@ fn get_type_size(type_spec: &TypeSpecifier, pointer_level: usize, context: &mut 
                 4
             }
         },
+        TypeSpecifier::Enum(name) => 4,
     }
 }
 

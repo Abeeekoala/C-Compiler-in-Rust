@@ -41,6 +41,13 @@ pub struct FieldInfo {
     pub size: usize,
 }
 
+/// Definition of an enum
+#[derive(Debug, Clone)]
+pub struct EnumDefinition {
+    pub enum_values: HashMap<String, i32>,
+    pub total_size: usize,
+}
+
 /// Manages the compilation context
 #[derive(Debug)]
 pub struct CodeGenContext {
@@ -72,6 +79,7 @@ pub struct CodeGenContext {
     pub function_signatures: HashMap<String, String>,
 
     pub struct_definitions: HashMap<String, StructDefinition>,
+    pub enum_definitions: HashMap<String, EnumDefinition>,
 }
 
 impl CodeGenContext {
@@ -103,6 +111,7 @@ impl CodeGenContext {
             continue_labels: Vec::new(),
             function_signatures: HashMap::new(),
             struct_definitions: HashMap::new(),
+            enum_definitions: HashMap::new(),
         }
     }
 
@@ -589,5 +598,55 @@ impl CodeGenContext {
         });
 
         offset
+    }
+
+    /// Register an enum definition with its values
+    pub fn register_enum(&mut self, name: String, values: Vec<(String, i32)>) {
+        // Create the enum definition
+        let enum_values = values.iter().cloned().collect::<HashMap<_, _>>();
+        let mut total_size = 0;
+
+        // Add each enum value as a constant in the current scope
+        for (value_name, value) in values {
+            total_size += 4;
+            // Create a constant symbol for this enum value
+            let symbol = Symbol {
+                // Enum constants are treated as integer constants
+                location: StorageLocation::Register(format!("#{}", value)), // Special marker for constants
+                size: 4, // int size
+                type_info: "int".to_string(),
+                dimensions: Vec::new(),
+                is_pointer: false,
+            };
+
+            // Add to the current scope
+            self.add_symbol(&value_name, symbol);
+        }
+        let enum_def = EnumDefinition {
+            enum_values,
+            total_size,
+        };
+
+        // Add the enum definition to the struct_definitions map
+        self.enum_definitions.insert(name.clone(), enum_def);
+    }
+
+    /// Look up an enum value
+    pub fn lookup_enum_value(&self, value_name: &str) -> Option<i32> {
+        // First check if it's a symbol in the current scope hierarchy
+        if let Some(symbol) = self.lookup_symbol(value_name) {
+            // If it's a constant (enum value), extract its value
+            if let StorageLocation::Register(reg) = &symbol.location {
+                if reg.starts_with('#') {
+                    // Extract the numeric value from the special register format
+                    if let Ok(value) = reg[1..].parse::<i32>() {
+                        return Some(value);
+                    }
+                }
+            }
+        }
+
+        // Not found in any scope
+        None
     }
 }

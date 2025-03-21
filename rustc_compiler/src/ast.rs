@@ -169,6 +169,11 @@ pub enum AstNode {
     SizeofExpr {
         expr: Box<AstNode>,
     },
+    /// Enum definition
+    EnumDefinition {
+        name: String,
+        values: Vec<(String, i32)>,
+    },
 }
 
 /// Binary operators
@@ -205,6 +210,7 @@ pub enum TypeSpecifier {
     Float,
     Double,
     Struct(String),
+    Enum(String),
 }
 
 // Implement Display for TypeSpecifier
@@ -219,6 +225,7 @@ impl fmt::Display for TypeSpecifier {
             TypeSpecifier::Float => write!(f, "float"),
             TypeSpecifier::Double => write!(f, "double"),
             TypeSpecifier::Struct(name) => write!(f, "struct {}", name),
+            TypeSpecifier::Enum(name) => write!(f, "enum {}", name),
         }
     }
 }

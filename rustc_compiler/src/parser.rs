@@ -48,9 +48,14 @@ impl Parser {
     pub fn parse_translation_unit(&mut self) -> ParseResult {
         let mut declarations = Vec::new();
 
+        println!("Starting to parse translation unit");
+
         while self.current < self.tokens.len() {
+            println!("Parsing external declaration at token: {:?}", self.peek());
             declarations.push(Box::new(self.parse_external_declaration()?));
         }
+
+        println!("Finished parsing translation unit with {} declarations", declarations.len());
 
         Ok(AstNode::NodeList(declarations))
     }
@@ -58,6 +63,11 @@ impl Parser {
     /// Parse an external declaration (function or global variable)
     fn parse_external_declaration(&mut self) -> ParseResult {
         let start_pos = self.current;
+
+        // Handle enum definition at global scope
+        if let Some(Token::EnumKw) = self.peek() {
+            return self.parse_enum_declaration();
+        }
 
         // Struct parsing
         if let Some(Token::StructKw) = self.peek() {
@@ -78,7 +88,7 @@ impl Parser {
             }
         }
 
-        // If not a struct definition, parse as function or variable as you go back to that point upon failing struct parsing
+        // Parse as function or variable
         let type_spec = self.parse_declaration_specifiers()?;
         let identifier = self.parse_identifier()?;
 
@@ -406,6 +416,22 @@ impl Parser {
                     }
                 } else {
                     Err(CompileError::ParserError("Expected struct name".to_string()))
+                }
+            },
+            // Handle enum definition within function
+            Some(Token::EnumKw) => {
+                // Parse an enum declaration as a statement (inside a function)
+                let start_pos = self.current;
+                let result = self.parse_enum_declaration();
+
+                match result {
+                    Ok(AstNode::TypeSpecifier(_)) => {
+                        // If it's just a type reference without a definition,
+                        // reset and try parsing as a variable declaration
+                        self.current = start_pos;
+                        self.parse_declaration()
+                    },
+                    _ => result
                 }
             },
             _ => {
@@ -1203,6 +1229,29 @@ impl Parser {
                     return Err(CompileError::ParserError("Expected identifier after 'struct'".to_string()));
                 }
             },
+            Token::EnumKw => {
+                self.advance();
+                if let Some(Token::Identifier(name)) = self.peek() {
+                    let enum_name = name.clone();
+                    self.advance();
+
+                    if let Some(Token::LBrace) = self.peek() {
+                        // This is a full enum definition
+                        self.advance(); // Consume '{'
+                        let values = self.parse_enum_values()?;
+                        self.expect_token(Token::RBrace)?;
+
+                        // No need to consume semicolon here, that's done at declaration level
+
+                        return Ok(TypeSpecifier::Enum(enum_name));
+                    } else {
+                        // This is just a reference to an enum type
+                        return Ok(TypeSpecifier::Enum(enum_name));
+                    }
+                } else {
+                    return Err(CompileError::ParserError("Expected identifier after 'enum'".to_string()));
+                }
+            },
             _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token)))
         }
     }
@@ -1247,5 +1296,96 @@ impl Parser {
         }
 
         Ok(params)
+    }
+
+    fn parse_enum_values(&mut self) -> Result<Vec<(String, i32)>, CompileError> {
+        let mut values = Vec::new();
+        let mut next_implicit_value = 0;
+
+        while !self.check_token(Token::RBrace) {
+            if let Some(Token::Identifier(name)) = self.peek() {
+                let enum_name = name.clone();
+                self.advance();
+
+                let value = if let Some(Token::Assign) = self.peek() {
+                    self.advance(); // Consume '='
+                    let expr = self.parse_constant_expression()?;
+
+                    // Extract the value from the constant expression
+                    match expr {
+                        AstNode::IntConstant(val) => {
+                            next_implicit_value = val + 1;
+                            val
+                        },
+                        _ => return Err(CompileError::ParserError(
+                            "Expected integer constant for enum value".to_string()
+                        ))
+                    }
+                } else {
+                    // Implicit value
+                    let val = next_implicit_value;
+                    next_implicit_value += 1;
+                    val
+                };
+
+                values.push((enum_name, value));
+
+                // Handle comma or end of enum
+                match self.peek() {
+                    Some(Token::Comma) => {
+                        self.advance();
+                    }
+                    Some(Token::RBrace) => {
+                        break;
+                    }
+                    _ => {
+                        return Err(CompileError::ParserError(
+                            "Expected comma or closing brace in enum definition".to_string()
+                        ));
+                    }
+                }
+            } else {
+                return Err(CompileError::ParserError(
+                    "Expected identifier in enum definition".to_string()
+                ));
+            }
+        }
+
+        Ok(values)
+    }
+
+    fn parse_enum_declaration(&mut self) -> ParseResult {
+        self.advance(); // Consume 'enum' keyword
+
+        let enum_name = if let Some(Token::Identifier(name)) = self.peek() {
+            let name_val = name.clone();
+            self.advance();
+            name_val
+        } else {
+            return Err(CompileError::ParserError("Expected identifier after 'enum'".to_string()));
+        };
+
+        if let Some(Token::LBrace) = self.peek() {
+            self.advance(); // Consume '{'
+            let values = self.parse_enum_values()?;
+
+            self.expect_token(Token::RBrace)?;
+            self.expect_token(Token::Semicolon)?;
+
+            Ok(AstNode::EnumDefinition {
+                name: enum_name,
+                values,
+            })
+        } else if let Some(Token::Semicolon) = self.peek() {
+            // Forward declaration of an enum type (without values)
+            self.advance(); // Consume semicolon
+            Ok(AstNode::EnumDefinition {
+                name: enum_name,
+                values: Vec::new(),
+            })
+        } else {
+            // If we have a name but no brace, it's a reference to an existing enum type in a declaration
+            Ok(AstNode::TypeSpecifier(TypeSpecifier::Enum(enum_name)))
+        }
     }
 }

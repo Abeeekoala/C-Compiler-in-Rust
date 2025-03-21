@@ -50,6 +50,13 @@ pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Resul
             context.emit(&format!("    # Function declaration: {:?}", node));
             Ok(())
         },
+        AstNode::EnumDefinition { name, values } => {
+            context.register_enum(name.clone(), values.clone());
+            // Enum definitions are just prototypes and don't generate code
+            // We can emit a comment for debugging purposes
+            context.emit(&format!("    # Enum definition: {:?}", node));
+            Ok(())
+        },
         _ => Err(CompileError::CodegenError(format!("Unsupported statement type: {:?}", node))),
     }
 }
