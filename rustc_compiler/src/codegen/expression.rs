@@ -692,6 +692,21 @@ fn generate_unary_operation(op: &str, operand: &AstNode, context: &mut CodeGenCo
                             context.free_fp_register(&one_reg);
                             return Ok(result_reg);
                         },
+                        type_str if type_str.ends_with('*') => {
+                            let pointed_type = type_str.trim_end_matches('*');
+                            let pointed_size = match pointed_type {
+                                "char" => 1,
+                                "double" => 8,
+                                _ => 4,
+                            };
+
+                            let result_reg = context.get_register();
+                            context.emit(&format!("    # Pre-increment pointer"));
+                            context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    addi {}, {}, {}", result_reg, result_reg, pointed_size));
+                            context.emit(&format!("    sw {}, {}(s0)", result_reg, offset));
+                            return Ok(result_reg);
+                        },
                         _ => return Err(CompileError::CodegenError(format!(
                             "Increment not supported for type: {}", type_info
                         ))),
@@ -728,6 +743,21 @@ fn generate_unary_operation(op: &str, operand: &AstNode, context: &mut CodeGenCo
                             context.emit(&format!("    fadd.d {}, {}, {}", result_reg, result_reg, minus_one_reg));
                             context.emit(&format!("    fsd {}, {}(s0)", result_reg, offset));
                             context.free_fp_register(&minus_one_reg);
+                            return Ok(result_reg);
+                        },
+                        type_str if type_str.ends_with('*') => {
+                            let pointed_type = type_str.trim_end_matches('*');
+                            let pointed_size = match pointed_type {
+                                "char" => 1,
+                                "double" => 8,
+                                _ => 4,
+                            };
+
+                            let result_reg = context.get_register();
+                            context.emit(&format!("    # Pre-decrement pointer"));
+                            context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    addi {}, {}, -{}", result_reg, result_reg, pointed_size));
+                            context.emit(&format!("    sw {}, {}(s0)", result_reg, offset));
                             return Ok(result_reg);
                         },
                         _ => return Err(CompileError::CodegenError(format!(
@@ -777,6 +807,24 @@ fn generate_unary_operation(op: &str, operand: &AstNode, context: &mut CodeGenCo
                             context.free_fp_register(&one_reg);
                             return Ok(result_reg);
                         },
+                        type_str if type_str.ends_with('*') => {
+                            let pointed_type = type_str.trim_end_matches('*');
+                            let pointed_size = match pointed_type {
+                                "char" => 1,
+                                "double" => 8,
+                                _ => 4,
+                            };
+
+                            let result_reg = context.get_register();
+                            let temp_reg = context.get_register();
+                            context.emit(&format!("    # Post-increment pointer"));
+                            context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    mv {}, {}", temp_reg, result_reg));
+                            context.emit(&format!("    addi {}, {}, {}", temp_reg, temp_reg, pointed_size));
+                            context.emit(&format!("    sw {}, {}(s0)", temp_reg, offset));
+                            context.free_register(&temp_reg);
+                            return Ok(result_reg);
+                        },
                         _ => return Err(CompileError::CodegenError(format!(
                             "Post-increment not supported for type: {}", type_info
                         ))),
@@ -822,6 +870,24 @@ fn generate_unary_operation(op: &str, operand: &AstNode, context: &mut CodeGenCo
                             context.emit(&format!("    fsd {}, {}(s0)", temp_reg, offset));
                             context.free_fp_register(&temp_reg);
                             context.free_fp_register(&minus_one_reg);
+                            return Ok(result_reg);
+                        },
+                        type_str if type_str.ends_with('*') => {
+                            let pointed_type = type_str.trim_end_matches('*');
+                            let pointed_size = match pointed_type {
+                                "char" => 1,
+                                "double" => 8,
+                                _ => 4,
+                            };
+
+                            let result_reg = context.get_register();
+                            let temp_reg = context.get_register();
+                            context.emit(&format!("    # Post-decrement pointer"));
+                            context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
+                            context.emit(&format!("    mv {}, {}", temp_reg, result_reg));
+                            context.emit(&format!("    addi {}, {}, -{}", temp_reg, temp_reg, pointed_size));
+                            context.emit(&format!("    sw {}, {}(s0)", temp_reg, offset));
+                            context.free_register(&temp_reg);
                             return Ok(result_reg);
                         },
                         _ => return Err(CompileError::CodegenError(format!(
@@ -884,7 +950,7 @@ fn generate_unary_operation(op: &str, operand: &AstNode, context: &mut CodeGenCo
 
 fn generate_logical_operation(op: &str, left: &AstNode, right: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let result_reg = generate_expression(left, context)?;
-    let short_circuit_label = context.generate_label("short_circuit"); // If we want to implement it
+    let short_circuit_label = context.generate_label("short_circuit");
     let end_label = context.generate_label("logical_end");
 
     context.emit(&format!("    snez {0}, {0}", result_reg));
