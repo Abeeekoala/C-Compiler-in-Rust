@@ -364,7 +364,7 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
         AstNode::SizeofExpr { expr } => {
             // Handle sizeof(expression)
             let expr_type = get_expression_type(expr, context)?;
-            let size = get_size_from_type_string(&expr_type);
+            let size = get_size_from_type_string(&expr_type, context);
             let result_reg = context.get_register();
             context.emit(&format!("    # sizeof expression with type {}", expr_type));
             context.emit(&format!("    li {}, {}", result_reg, size));
@@ -1902,12 +1902,11 @@ fn get_type_size(type_spec: &TypeSpecifier, pointer_level: usize, context: &mut 
                 4
             }
         },
-        _ => 4, // Default size for unknown types
     }
 }
 
 // Helper function to get size from a type string
-fn get_size_from_type_string(type_str: &str) -> i32 {
+fn get_size_from_type_string(type_str: &str, context: &mut CodeGenContext) -> i32 {
     if type_str.ends_with('*') {
         return 4; // All pointers are 4 bytes
     }
@@ -1920,7 +1919,15 @@ fn get_size_from_type_string(type_str: &str) -> i32 {
         "float" => 4,
         "double" => 8,
         "void" => 1,
-        _ if type_str.starts_with("struct ") => 4, // Should be calculated from struct definition
-        _ => 4, // Default size
+        _ if type_str.starts_with("struct ") => {
+            // Look up the struct definition to calculate its size
+            let struct_name = type_str["struct ".len()..].to_string();
+            if let Some(struct_def) = context.struct_definitions.get(&struct_name) {
+                struct_def.total_size as i32
+            } else {
+                4
+            }
+        },
+        _ => 4,
     }
 }
