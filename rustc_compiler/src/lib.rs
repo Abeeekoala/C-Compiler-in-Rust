@@ -6,18 +6,12 @@ pub mod error;
 pub mod debug;
 use crate::error::CompileError;
 
-// use ast::Node;
-
 pub fn parse_source(source: &str) -> Result<ast::AstNode, CompileError> {
-    // First, tokenize the input using the lexer
     let tokens = lexer::tokenize(source)?;
     println!("Tokens: {:?}", tokens);
-    // Then, construct the parser with the tokens.
     let mut parser = parser::Parser::new(tokens);
-    // Parse the translation unit (the root of the AST).
     let result = parser.parse_translation_unit()?;
 
-    // If we're looking at a NodeList with exactly one element, return that element directly
     if let ast::AstNode::NodeList(nodes) = result {
         if nodes.len() == 1 {
             return Ok(*nodes.into_iter().next().unwrap());

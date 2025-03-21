@@ -25,18 +25,10 @@ fn main() -> Result<(), CompileError> {
         }
     };
 
-    // Read input file
-    let source = fs::read_to_string(&input_file)
-        .map_err(|e| CompileError::IOError(format!("Error reading file: {}", e)))?;
-
-    // Parse source to AST
+    let source = fs::read_to_string(&input_file).map_err(|e| CompileError::IOError(format!("Error reading file: {}", e)))?;
     let ast = parse_source(&source)?;
-
-    // Always print AST for debugging during development
     eprintln!("--- AST for {} ---", input_file);
     eprintln!("{}", print_ast(&ast));
-
-    // Generate assembly code
     let (assembly, context) = generate_code(&ast)?;
 
     if debug_mode {
@@ -44,12 +36,8 @@ fn main() -> Result<(), CompileError> {
         eprintln!("{}", print_symbol_table(&context));
     }
 
-    // Write to output file
-    let mut file = fs::File::create(&output_file)
-        .map_err(|e| CompileError::IOError(format!("Error creating output file: {}", e)))?;
-    file.write_all(assembly.as_bytes())
-        .map_err(|e| CompileError::IOError(format!("Error writing to file: {}", e)))?;
-
+    let mut file = fs::File::create(&output_file).map_err(|e| CompileError::IOError(format!("Error creating output file: {}", e)))?;
+    file.write_all(assembly.as_bytes()).map_err(|e| CompileError::IOError(format!("Error writing to file: {}", e)))?;
     println!("Successfully compiled {} to {}", input_file, output_file);
     Ok(())
 }

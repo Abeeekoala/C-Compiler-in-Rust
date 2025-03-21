@@ -3,12 +3,11 @@ use crate::codegen::context::CodeGenContext;
 use crate::codegen::context::StorageLocation;
 use crate::ast::TypeSpecifier;
 use crate::error::CompileError;
-/// Generate code for an expression
+
 pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     match node {
         AstNode::Identifier(name) => {
             if let Some(enum_value) = context.lookup_enum_value(name) {
-                //enum value -> load to register
                 let reg = context.get_register();
                 context.emit(&format!("    li {}, {}", reg, enum_value));
                 return Ok(reg);
@@ -65,29 +64,23 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             Err(CompileError::CodegenError(format!("Unknown identifier in expression: {}", name)))
         },
         AstNode::Assignment { lhs, rhs } => {
-            // Generate RHS expression and get its type
             let rhs_reg = generate_expression(rhs, context)?;
             let rhs_type = get_expression_type(rhs, context)?;
 
             match &**lhs {
                 AstNode::Identifier(name) => {
-                    // Get LHS variable info (offset and type)
                     if let Some((offset, lhs_type)) = context.get_variable(name) {
-                        // Add special handling for pointer assignment
                         if lhs_type.ends_with('*') && rhs_type.ends_with('*') {
-                            // Pointer to pointer assignment is allowed
                             context.emit(&format!("    sw {}, {}(s0)", rhs_reg, offset));
                             return Ok(rhs_reg);
                         }
 
                         match (lhs_type.as_str(), rhs_type.as_str()) {
                             ("int", "int") => {
-                                // Integer to integer: use sw
                                 context.emit(&format!("    sw {}, {}(s0)", rhs_reg, offset));
                                 return Ok(rhs_reg)
                             },
                             ("float", "float") => {
-                                // Float to float: ensure RHS is in an FP register, use fsw
                                 if rhs_reg.starts_with('f') {
                                     context.emit(&format!("    fsw {}, {}(s0)", rhs_reg, offset));
                                     return Ok(rhs_reg)
@@ -98,7 +91,6 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                                 };
                             },
                             ("float", "int") => {
-                                // Int to float: convert RHS to float, then store with fsw
                                 let fp_reg = context.get_fp_register();
                                 context.emit(&format!("    fcvt.s.w {}, {}", fp_reg, rhs_reg));
                                 context.emit(&format!("    fsw {}, {}(s0)", fp_reg, offset));
@@ -107,7 +99,6 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                                 return Ok(fp_reg)
                             },
                             ("int", "float") => {
-                                // Float to int: convert RHS to int, then store with sw
                                 if rhs_reg.starts_with('f') {
                                     let int_reg = context.get_register();
                                     context.emit(&format!("    fcvt.w.s {}, {}", int_reg, rhs_reg));
@@ -238,7 +229,7 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                                 }
                             }
 
-                            return Ok(rhs_reg);
+                            return Ok(rhs_reg); // Using return here to force out the mismatched error
                         },
                         _ => {
                             return Err(CompileError::CodegenError(
@@ -262,16 +253,11 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                     match &**operand {
                         AstNode::Identifier(name) => {
                             if let Some((offset, lhs_type)) = context.get_variable(name) {
-                                // Check if lhs_type is a pointer (e.g., "int*")
                                 if lhs_type.ends_with('*') {
-                                    // Extract the type pointed to (e.g., "int" from "int*")
                                     let target_type = lhs_type.trim_end_matches('*');
-
-                                    // Load the pointer value (address) into a register
                                     let addr_reg = context.get_register();
                                     context.emit(&format!("    lw {}, {}(s0)", addr_reg, offset));
 
-                                    // Match the target type with RHS type and store accordingly
                                     match (target_type, rhs_type.as_str()) {
                                         ("int", "int") => {
                                             context.emit(&format!("    sw {}, 0({})", rhs_reg, addr_reg));
@@ -313,12 +299,10 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 },
                 _ => {},
             }
-            // This error will be reached if none of the return statements above were executed
             Err(CompileError::CodegenError(format!("Invalid assignment target attempt to assign {} from register {}", rhs_type, rhs_reg)))
         },
         AstNode::IntegerLiteral(value) => generate_int_constant(*value, context),
         AstNode::BinaryOperation { op, left, right } => {
-            // Check if both operands are floating-point
             let left_type = get_expression_type(left, context)?;
             let right_type = get_expression_type(right, context)?;
 
@@ -337,25 +321,20 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             Ok(reg)
         },
         AstNode::FunctionCall { function, args } => {
-            // Generate code for function call
             generate_function_call(function, args, context)
         },
-        // Array subscript: array[index]
+        // Array subscript so like x[y] kind of thing
         AstNode::ArraySubscript { array, index } => {
             let (base, indices) = collect_array_access(node)?;
             let (addr_reg, element_size) = calculate_array_element_address(&base, &indices, context)?;
             let result_reg = context.get_register();
 
             if element_size == 1 {
-                // For char type, use lb (load byte)
                 context.emit(&format!("    lb {}, 0({})", result_reg, addr_reg));
-
-                // Sign-extend the byte
                 context.emit(&format!("    # Sign-extend char to word"));
                 context.emit(&format!("    slli {0}, {0}, 24", result_reg));
                 context.emit(&format!("    srai {0}, {0}, 24", result_reg));
             } else {
-                // For other types, use the regular lw
                 context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
             }
 
@@ -372,18 +351,14 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             generate_member_access(object, member, context)
         },
         AstNode::SizeofType { type_spec, pointer_level } => {
-            // Handle sizeof(type)
             let size = get_type_size(type_spec, *pointer_level, context);
             let result_reg = context.get_register();
-            context.emit(&format!("    # sizeof type {}{}",
-                type_spec,
-                "*".repeat(*pointer_level)));
+            context.emit(&format!("    # sizeof type {}{}", type_spec, "*".repeat(*pointer_level)));
             context.emit(&format!("    li {}, {}", result_reg, size));
             Ok(result_reg)
         },
 
         AstNode::SizeofExpr { expr } => {
-            // Handle sizeof(expression)
             let expr_type = get_expression_type(expr, context)?;
             let size = get_size_from_type_string(&expr_type, context);
             let result_reg = context.get_register();
@@ -392,33 +367,26 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             Ok(result_reg)
         },
         AstNode::StringLiteral(value) => {
-            // Generate a unique label for the string
             let str_label = context.generate_label("str");
 
-            // Emit the string into the .data section
             context.emit_data(&format!("{}:", str_label));
             context.emit_data(&format!("    .string \"{}\"", value));
-
-            // Load the address into a register
             let reg = context.get_register();
             context.emit(&format!("    la {}, {}", reg, str_label));
             Ok(reg)
         },
-        // Handle other expression types
         _ => Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node))),
     }
 }
 
-/// Generate code for an integer constant
+
 fn generate_int_constant(value: i32, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let reg = context.get_register();
     context.emit(&format!("    li {}, {}", reg, value));
     Ok(reg)
 }
 
-/// Generate code for an identifier (variable reference)
 fn generate_identifier(name: &str, context: &mut CodeGenContext) -> Result<String, CompileError> {
-    // First, extract the information we need from the symbol
     let location = match context.lookup_symbol(name) {
         Some(symbol) => symbol.location.clone(),
         None => return Err(CompileError::CodegenError(format!("Identifier '{}' not found", name))),
@@ -426,7 +394,6 @@ fn generate_identifier(name: &str, context: &mut CodeGenContext) -> Result<Strin
 
     let result_reg = context.get_register();
 
-    // Use the extracted location information
     match location {
         crate::codegen::context::StorageLocation::Register(reg) => {
             context.emit(&format!("    mv {}, {}", result_reg, reg));
@@ -435,7 +402,6 @@ fn generate_identifier(name: &str, context: &mut CodeGenContext) -> Result<Strin
             context.emit(&format!("    lw {}, {}(s0)", result_reg, offset));
         },
         StorageLocation::Global(label) => {
-            // For global variables, load address then load value
             context.emit(&format!("    la {}, {}", result_reg, label));
             context.emit(&format!("    lw {}, 0({})", result_reg, result_reg));
         },
@@ -444,39 +410,25 @@ fn generate_identifier(name: &str, context: &mut CodeGenContext) -> Result<Strin
     Ok(result_reg)
 }
 
-/// Generate code for a binary operation
-fn generate_binary_operation(
-    op: &str,
-    left: &AstNode,
-    right: &AstNode,
-    left_type: &str,
-    right_type: &str,
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
-    // Special handling for logical operators with short-circuit evaluation
+fn generate_binary_operation(op: &str, left: &AstNode, right: &AstNode, left_type: &str, right_type: &str, context: &mut CodeGenContext) -> Result<String, CompileError> {
     if op == "&&" || op == "||" {
         return generate_logical_operation(op, left, right, context);
     }
 
-    // Handle pointer arithmetic (unchanged, as it’s type-driven already)
     if (op == "+" || op == "-") && (left_type.ends_with('*') || right_type.ends_with('*')) {
         return generate_pointer_arithmetic(op, left, right, left_type.to_string(), right_type.to_string(), context);
     }
 
-    // Compute common type for operations (C90: if either operand is unsigned, the result is unsigned)
     let common_type = if left_type == "unsigned" || right_type == "unsigned" {
         "unsigned"
-    } else {
-        "int" // Default to signed if both are "int" or untyped
+    } else{
+        "int" // Defaulting to signed just in case
     };
 
-    // Generate code for operands
     let left_reg = generate_expression(left, context)?;
     let right_reg = generate_expression(right, context)?;
 
-    // Handle operations based on type
     let result_reg = match op {
-        // Arithmetic operations
         "+" => {
             context.emit(&format!("    add {0}, {1}, {2}", left_reg, left_reg, right_reg));
             left_reg
@@ -505,7 +457,6 @@ fn generate_binary_operation(
             }
             left_reg
         }
-        // Bitwise shifts
         "<<" => {
             context.emit(&format!("    sll {0}, {1}, {2}", left_reg, left_reg, right_reg));
             left_reg
@@ -518,15 +469,14 @@ fn generate_binary_operation(
             }
             left_reg
         }
-        // Comparison operators
-        "==" => {
-            context.emit(&format!("    xor {0}, {1}, {2}", left_reg, left_reg, right_reg));
-            context.emit(&format!("    seqz {0}, {0}", left_reg));
-            left_reg
-        }
         "!=" => {
             context.emit(&format!("    xor {0}, {1}, {2}", left_reg, left_reg, right_reg));
             context.emit(&format!("    snez {0}, {0}", left_reg));
+            left_reg
+        }
+        "==" => {
+            context.emit(&format!("    xor {0}, {1}, {2}", left_reg, left_reg, right_reg));
+            context.emit(&format!("    seqz {0}, {0}", left_reg));
             left_reg
         }
         "<" => {
@@ -540,7 +490,7 @@ fn generate_binary_operation(
         ">" => {
             if common_type == "unsigned" {
                 context.emit(&format!("    sltu {0}, {1}, {2}", left_reg, right_reg, left_reg));
-            } else {
+            } else{
                 context.emit(&format!("    slt {0}, {1}, {2}", left_reg, right_reg, left_reg));
             }
             left_reg
@@ -561,7 +511,7 @@ fn generate_binary_operation(
             let temp_reg = context.get_register();
             if common_type == "unsigned" {
                 context.emit(&format!("    sltu {0}, {1}, {2}", temp_reg, left_reg, right_reg));
-            } else {
+            } else{
                 context.emit(&format!("    slt {0}, {1}, {2}", temp_reg, left_reg, right_reg));
             }
             context.emit(&format!("    xori {0}, {0}, 1", temp_reg));
@@ -569,7 +519,6 @@ fn generate_binary_operation(
             context.free_register(&temp_reg);
             left_reg
         }
-        // Bitwise operators (same for signed and unsigned)
         "&" => {
             context.emit(&format!("    and {0}, {1}, {2}", left_reg, left_reg, right_reg));
             left_reg
@@ -584,57 +533,41 @@ fn generate_binary_operation(
         }
         _ => return Err(CompileError::CodegenError(format!("Invalid binary operation: {}", op))),
     };
-
-    // Free the right register since the result is in the left register
     context.free_register(&right_reg);
-
     Ok(result_reg)
 }
 
-/// Generate code for pointer arithmetic operations
-fn generate_pointer_arithmetic(
-    op: &str,
-    left: &AstNode,
-    right: &AstNode,
-    left_type: String,
-    right_type: String,
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
-    // Generate code for both operands
+fn generate_pointer_arithmetic(op: &str, left: &AstNode, right: &AstNode, left_type: String, right_type: String, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let left_reg = generate_expression(left, context)?;
     let right_reg = generate_expression(right, context)?;
 
-    // Determine which operand is the pointer and which is the integer
     let (ptr_reg, int_reg, ptr_type, is_left_ptr) = if left_type.ends_with('*') {
         (left_reg.clone(), right_reg.clone(), left_type.trim_end_matches('*').to_string(), true)
     } else {
         (right_reg.clone(), left_reg.clone(), right_type.trim_end_matches('*').to_string(), false)
     };
 
-    // Get element size based on the pointer type
     let element_size = if ptr_type.contains("char") {
-        1 // Char is 1 byte
+        1
     } else if ptr_type.contains("double") {
-        8 // Double is 8 bytes
+        8
     } else {
-        4 // Default is 4 bytes (int, float, pointers)
+        4
     };
 
     let result_reg = if op == "+" || (op == "-" && is_left_ptr) {
-        // For ptr + int or ptr - int
         let scaled_reg = context.get_register();
 
         if element_size == 1 {
             context.emit(&format!("    mv {}, {}", scaled_reg, int_reg));
         } else {
-            // Scale the integer by element size
             context.emit(&format!("    li {}, {}", scaled_reg, element_size));
             context.emit(&format!("    mul {}, {}, {}", scaled_reg, int_reg, scaled_reg));
         }
 
         if op == "+" {
             context.emit(&format!("    add {}, {}, {}", ptr_reg, ptr_reg, scaled_reg));
-        } else { // op == "-" && is_left_ptr
+        } else{
             context.emit(&format!("    sub {}, {}, {}", ptr_reg, ptr_reg, scaled_reg));
         }
 
@@ -642,13 +575,9 @@ fn generate_pointer_arithmetic(
         context.free_register(&int_reg);
         ptr_reg
     } else if op == "-" && left_type.ends_with('*') && right_type.ends_with('*') {
-        // For ptr - ptr (difference between two pointers)
         let result_reg = context.get_register();
-
-        // Calculate (left - right)
         context.emit(&format!("    sub {}, {}, {}", result_reg, left_reg, right_reg));
 
-        // Divide by element size to get the count of elements
         if element_size > 1 {
             let size_reg = context.get_register();
             context.emit(&format!("    li {}, {}", size_reg, element_size));
@@ -656,11 +585,10 @@ fn generate_pointer_arithmetic(
             context.free_register(&size_reg);
         }
 
-        context.free_register(&left_reg);
         context.free_register(&right_reg);
+        context.free_register(&left_reg);
         result_reg
     } else {
-        // This shouldn't happen based on our checks, but just in case
         return Err(CompileError::CodegenError(
             format!("Invalid pointer arithmetic: {} {} {}", left_type, op, right_type)
         ));
@@ -669,19 +597,12 @@ fn generate_pointer_arithmetic(
     Ok(result_reg)
 }
 
-/// Generate code for unary operations
-fn generate_unary_operation(
-    op: &str,
-    operand: &AstNode,
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
-    match op {
-        // Unary plus: doesn't change the value
+fn generate_unary_operation(op: &str, operand: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
+    match op{
         "+" => {
             generate_expression(operand, context)
         },
 
-        // Unary minus: negate the value
         "-" => {
             let operand_type = get_expression_type(operand, context)?;
             let operand_reg = generate_expression(operand, context)?;
@@ -702,7 +623,6 @@ fn generate_unary_operation(
             Ok(operand_reg)
         },
 
-        // Bitwise NOT
         "~" => {
             let operand_type = get_expression_type(operand, context)?;
             if operand_type != "int" {
@@ -715,11 +635,10 @@ fn generate_unary_operation(
             Ok(operand_reg)
         },
 
-        // Logical NOT
         "!" => {
             let operand_type = get_expression_type(operand, context)?;
             let operand_reg = generate_expression(operand, context)?;
-            let result_reg = context.get_register(); // Integer result (0 or 1)
+            let result_reg = context.get_register();
             match operand_type.as_str() {
                 "int" => {
                     context.emit(&format!("    seqz {}, {}", result_reg, operand_reg));
@@ -744,7 +663,6 @@ fn generate_unary_operation(
             Ok(result_reg)
         },
 
-        // Pre-increment: increment operand, then return new value
         "++" => {
             if let AstNode::Identifier(var_name) = operand {
                 if let Some((offset, type_info)) = context.get_variable(var_name) {
@@ -783,7 +701,6 @@ fn generate_unary_operation(
             Err(CompileError::CodegenError("Invalid operand for ++ operation".to_string()))
         },
 
-        // Pre-decrement: decrement operand, then return new value
         "--" => {
             if let AstNode::Identifier(var_name) = operand {
                 if let Some((offset, type_info)) = context.get_variable(var_name) {
@@ -822,7 +739,6 @@ fn generate_unary_operation(
             Err(CompileError::CodegenError("Invalid operand for -- operation".to_string()))
         },
 
-        // Post-increment: return original value, then increment
         "post++" => {
             if let AstNode::Identifier(var_name) = operand {
                 if let Some((offset, type_info)) = context.get_variable(var_name) {
@@ -870,7 +786,6 @@ fn generate_unary_operation(
             Err(CompileError::CodegenError("Invalid operand for post++ operation".to_string()))
         },
 
-        // Post-decrement: return original value, then decrement
         "post--" => {
             if let AstNode::Identifier(var_name) = operand {
                 if let Some((offset, type_info)) = context.get_variable(var_name) {
@@ -918,20 +833,13 @@ fn generate_unary_operation(
             Err(CompileError::CodegenError("Invalid operand for post-- operation".to_string()))
         },
 
-        // Pointer dereference
         "*" => {
             let addr_reg = generate_expression(operand, context)?;
-
-            // Get the type of the pointer operand to determine how to load
             let operand_type = get_expression_type(operand, context)?;
 
-            // Check if we're dereferencing a char pointer
             if operand_type == "char*" {
-                // For char pointers, use lb (load byte)
                 let result_reg = context.get_register();
                 context.emit(&format!("    lb {}, 0({})", result_reg, addr_reg));
-
-                // Sign-extend the byte to a word
                 context.emit(&format!("    # Sign-extend char to word"));
                 context.emit(&format!("    slli {0}, {0}, 24", result_reg));
                 context.emit(&format!("    srai {0}, {0}, 24", result_reg));
@@ -941,19 +849,16 @@ fn generate_unary_operation(
                 }
                 Ok(result_reg)
             } else if operand_type == "float*" {
-                // For float pointers, use flw (float load word)
                 let result_reg = context.get_fp_register();
                 context.emit(&format!("    flw {}, 0({})", result_reg, addr_reg));
                 context.free_register(&addr_reg);
                 Ok(result_reg)
             } else if operand_type == "double*" {
-                // For double pointers, use fld (float load double)
                 let result_reg = context.get_fp_register();
                 context.emit(&format!("    fld {}, 0({})", result_reg, addr_reg));
                 context.free_register(&addr_reg);
                 Ok(result_reg)
-            } else {
-                // For all other pointers (int*, etc.), use lw (load word)
+            } else{
                 let result_reg = context.get_register();
                 context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
                 if addr_reg != result_reg {
@@ -963,7 +868,6 @@ fn generate_unary_operation(
             }
         },
 
-        // Address-of operator
         "&" => {
             if let AstNode::Identifier(var_name) = operand {
                 if let Some((offset, _)) = context.get_variable(var_name) {
@@ -974,39 +878,21 @@ fn generate_unary_operation(
             }
             Err(CompileError::CodegenError("Invalid operand for & operation".to_string()))
         },
-
         _ => Err(CompileError::CodegenError(format!("Unsupported unary operation: {}", op))),
     }
 }
 
-/// Generate code for logical operators with short-circuit evaluation
-fn generate_logical_operation(
-    op: &str,
-    left: &AstNode,
-    right: &AstNode,
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
-    // Generate code for left operand
+fn generate_logical_operation(op: &str, left: &AstNode, right: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let result_reg = generate_expression(left, context)?;
-
-    // Generate unique labels for short-circuit evaluation
+    let short_circuit_label = context.generate_label("short_circuit"); // If we want to implement it
     let end_label = context.generate_label("logical_end");
-    let short_circuit_label = context.generate_label("short_circuit");
 
-    // Normalize left operand to 0 or 1
     context.emit(&format!("    snez {0}, {0}", result_reg));
 
-    if op == "&&" {
-        // For AND: if left is 0, short-circuit to end (result is already 0)
+    if op == "&&"{
         context.emit(&format!("    beqz {}, {}", result_reg, short_circuit_label));
-
-        // Left is 1, evaluate right operand
         let right_reg = generate_expression(right, context)?;
-
-        // Normalize right operand to 0 or 1
         context.emit(&format!("    snez {0}, {0}", right_reg));
-
-        // Move right result to result register
         if result_reg != right_reg {
             context.emit(&format!("    mv {}, {}", result_reg, right_reg));
             context.free_register(&right_reg);
@@ -1014,38 +900,26 @@ fn generate_logical_operation(
 
         context.emit(&format!("    j {}", end_label));
         context.emit(&format!("{}:", short_circuit_label));
-        // For short-circuit, result is already 0 in result_reg
 
     } else if op == "||" {
-        // For OR: if left is 1, short-circuit to end (result is already 1)
         context.emit(&format!("    bnez {}, {}", result_reg, short_circuit_label));
-
-        // Left is 0, evaluate right operand
         let right_reg = generate_expression(right, context)?;
-
-        // Normalize right operand to 0 or 1
         context.emit(&format!("    snez {0}, {0}", right_reg));
 
-        // Move right result to result register
-        if result_reg != right_reg {
+        if result_reg != right_reg{
             context.emit(&format!("    mv {}, {}", result_reg, right_reg));
             context.free_register(&right_reg);
         }
-
         context.emit(&format!("    j {}", end_label));
         context.emit(&format!("{}:", short_circuit_label));
-        // For short-circuit, result is already 1 in result_reg
-
     } else {
         return Err(CompileError::CodegenError(format!("Invalid logical operation: {}", op)));
     }
 
     context.emit(&format!("{}:", end_label));
-
     Ok(result_reg)
 }
 
-// For assignment operations
 fn generate_assignment(left: &AstNode, right: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let right_reg = generate_expression(right, context)?;
 
@@ -1126,7 +1000,6 @@ fn generate_assignment(left: &AstNode, right: &AstNode, context: &mut CodeGenCon
                             format!("Variable {} is not a struct", var_name)
                         ));
                     }
-
                     let struct_name = _type_info["struct ".len()..].to_string();
 
                     let field_info = if let Some(struct_def) = context.struct_definitions.get(&struct_name) {
@@ -1158,55 +1031,41 @@ fn generate_assignment(left: &AstNode, right: &AstNode, context: &mut CodeGenCon
             context.free_register(&left_reg);
         }
     }
-
     Ok(right_reg)
 }
 
-fn generate_function_call(
-    function: &AstNode,
-    args: &[Box<AstNode>],
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
-    // Get function name
+fn generate_function_call(function: &AstNode, args: &[Box<AstNode>], context: &mut CodeGenContext) -> Result<String, CompileError> {
     let func_name = match function {
         AstNode::Identifier(name) => name,
         _ => return Err(CompileError::CodegenError(format!("Expected function name, found {:?}", function))),
     };
 
-    // Save all used registers to stack before the call
     let int_registers = context.save_temp_registers();
     let fp_registers = context.save_fp_registers();
 
-    // Process arguments
     for (i, arg) in args.iter().enumerate().take(8) {
         let arg_type = get_expression_type(arg, context)?;
         let is_float = arg_type == "float" || arg_type == "double";
         println!("Debug arg{}: arg_type {}, for function call {}", i, arg_type, func_name);
         if is_float {
-            // Floating-point arguments go in fa0-fa7
             if let AstNode::FloatConstant(value) = &**arg {
-                // For float constants, we need to load from memory
                 let const_label = context.generate_label("float_const");
                 context.emit_data(&format!("{}:", const_label));
-                context.emit_data(&format!("    .word 0x{:08x}  # float {}",
-                                          f32::to_bits(*value as f32), value));
+                context.emit_data(&format!("    .word 0x{:08x}  # float {}", f32::to_bits(*value as f32), value));
 
                 let temp_reg = context.get_register();
                 context.emit(&format!("    la {}, {}", temp_reg, const_label));
                 context.emit(&format!("    flw fa{}, 0({})", i, temp_reg));
                 context.free_register(&temp_reg);
             } else {
-                // For complex expressions, evaluate and move to argument register
                 let arg_reg = generate_expression(arg, context)?;
 
                 if arg_reg.starts_with('f') {
-                    // Already a floating-point register
                     if arg_reg != format!("fa{}", i) {
                         context.emit(&format!("    fmv.s fa{}, {}", i, arg_reg));
                         context.free_fp_register(&arg_reg);
                     }
                 } else {
-                    // Integer register, need to convert
                     context.emit(&format!("    fcvt.s.w fa{}, {}", i, arg_reg));
                     context.free_register(&arg_reg);
                 }
@@ -1217,19 +1076,14 @@ fn generate_function_call(
                     context.emit(&format!("    li a{}, {}", i, value));
                 },
                 AstNode::StringLiteral(value) => {
-                    // Generate a unique label for the string
                     let str_label = context.generate_label("str");
                     context.emit_data(&format!("{}:", str_label));
                     context.emit_data(&format!("    .string \"{}\"", value));
-
-                    // Load the address into the argument register
                     context.emit(&format!("    la a{}, {}", i, str_label));
                 },
                 _ => {
-                    // For complex expressions (including variables or other expressions)
                     let arg_reg = generate_expression(arg, context)?;
                     if arg_reg.starts_with('f') {
-                        // Floating-point register, convert to integer
                         context.emit(&format!("    fcvt.w.s a{}, {}", i, arg_reg));
                         context.free_fp_register(&arg_reg);
                     } else if arg_reg != format!("a{}", i) {
@@ -1240,22 +1094,16 @@ fn generate_function_call(
             }
         }
     }
-
-    // Call the function
     context.emit(&format!("    call {}", func_name));
 
-    // Look up the function's return type
-    let return_type = context.get_function_return_type(func_name)
-        .unwrap_or_else(|| {
-            // If we can't find the function, default to "int" and emit a warning comment
-            context.emit(&format!("    # Warning: Unknown return type for function {}, assuming int", func_name));
-            "int".to_string()
-        });
+    let return_type = context.get_function_return_type(func_name).unwrap_or_else(|| {
+        context.emit(&format!("    # Warning: Unknown return type for function {}, assuming int", func_name));
+        "int".to_string()
+    });
 
     let result_reg = if return_type == "float" || return_type == "double" {
         let fp_reg = context.get_fp_register();
 
-        // Move return value (in fa0) to our result register if needed
         if fp_reg != "fa0" {
             context.emit(&format!("    fmv.s {}, fa0", fp_reg));
         }
@@ -1263,31 +1111,22 @@ fn generate_function_call(
     } else {
         let reg = context.get_register();
 
-        // Move return value (in a0) to our result register if needed
         if reg != "a0" {
             context.emit(&format!("    mv {}, a0", reg));
         }
         reg
     };
 
-    // Restore registers
     context.restore_fp_registers(fp_registers);
     context.restore_temp_registers(int_registers);
-
     Ok(result_reg)
 }
 
-fn calculate_array_element_address(
-        array_name: &str,
-        indices: &[AstNode],
-        context: &mut CodeGenContext,
-    ) -> Result<(String, usize), CompileError> {
-    // data from the symbol (immutable borrow)
+fn calculate_array_element_address(array_name: &str, indices: &[AstNode], context: &mut CodeGenContext,) -> Result<(String, usize), CompileError> {
     let (base_offset, dimensions, is_global, global_label, is_pointer, type_info) = {
         if let Some(symbol) = context.lookup_symbol(array_name) {
             match &symbol.location {
                 StorageLocation::Stack(offset) => {
-                    // Clone the dimensions and check if it's a pointer
                     (*offset, symbol.dimensions.clone(), false, String::new(),
                      symbol.is_pointer, symbol.type_info.clone())
                 },
@@ -1304,19 +1143,16 @@ fn calculate_array_element_address(
         }
     };
 
-    // Calculate element size based on the pointer type
     let element_size = if type_info.contains("char") {
-        1 // Char is 1 byte
+        1
     } else if type_info.contains("double") {
-        8 // Double is 8 bytes
+        8
     } else {
-        4 // Default is 4 bytes (int, float, pointers)
+        4
     };
 
-    println!("Array/pointer access: name={}, is_pointer={}, type={}",
-             array_name, is_pointer, type_info);
+    println!("Array/pointer access: name={}, is_pointer={}, type={}",array_name, is_pointer, type_info);
 
-    // For pointers, we only need one index and we don't check dimensions
     if is_pointer {
         if indices.len() != 1 {
             return Err(CompileError::CodegenError(format!(
@@ -1324,51 +1160,37 @@ fn calculate_array_element_address(
             )));
         }
 
-        // Generate code for the index expression
         let index_reg = generate_expression(&indices[0], context)?;
         let base_reg = context.get_register();
         context.emit(&format!("    lw {}, {}(s0)", base_reg, base_offset));
-        // Compute address: pointer_value + index * element_size
         let addr_reg = context.get_register();
 
-        // Scale the index by element size
         if element_size == 1 {
-            // For char arrays, no shifting needed (just add index directly)
             context.emit(&format!("    add {0}, {1}, {2}", addr_reg, base_reg, index_reg));
         } else {
-            // For other types, scale by element size
-            context.emit(&format!("    slli {0}, {1}, {2}",
-                                 addr_reg, index_reg,
-                                 if element_size == 8 { 3 } else { 2 })); // *4 or *8
-
-            // Add the scaled index to the base address
+            context.emit(&format!("    slli {0}, {1}, {2}", addr_reg, index_reg, if element_size == 8 { 3 } else { 2 })); // *4 or *8
             context.emit(&format!("    add {0}, {0}, {1}", addr_reg, base_reg));
         }
 
-        // Free temporary registers
         context.free_register(&index_reg);
         context.free_register(&base_reg);
         return Ok((addr_reg, element_size));
     }
 
-    // Regular array processing (existing code)
-    // Check if dimensions match
     if indices.len() != dimensions.len() {
         return Err(CompileError::CodegenError(format!(
-            "Number of indices ({}) does not match array dimensions ({})",
+            "Number of indices ({}) does not match array dimensions ({})", // SHAME ON YOU PROGRAMMER!
             indices.len(),
             dimensions.len()
         )));
     }
 
-    // Generate code for each index expression
     let mut index_regs = Vec::new();
     for index in indices {
         let reg = generate_expression(index, context)?;
         index_regs.push(reg);
     }
 
-    // Compute linear index for row-major order
     let mut offset_reg = context.get_register();
     context.emit(&format!("    mv {}, {}", offset_reg, index_regs[0])); // Start with i1
     let mut tmp_reg = context.get_register();
@@ -1379,18 +1201,15 @@ fn calculate_array_element_address(
         context.emit(&format!("    add {}, {}, {}", offset_reg, offset_reg, index_regs[m])); // offset += im
     }
     context.free_register(&tmp_reg);
-    // Compute final address: s0 + base_offset + linear_index * element_size
     let addr_reg = context.get_register();
-    context.emit(&format!("    slli {0}, {1}, 2", addr_reg, offset_reg)); // *4 for int size
+    context.emit(&format!("    slli {0}, {1}, 2", addr_reg, offset_reg));
 
     if is_global {
-        // For global arrays, load the base address then add the offset
         let temp_reg = context.get_register();
         context.emit(&format!("    la {}, {}", temp_reg, global_label));
         context.emit(&format!("    add {}, {}, {}", addr_reg, addr_reg, temp_reg));
         context.free_register(&temp_reg);
     } else {
-        // For local arrays, add the base offset and frame pointer
         if base_offset >= -2048 && base_offset <= 2047 {
             context.emit(&format!("    addi {0}, {0}, {1}", addr_reg, base_offset));
         } else {
@@ -1402,7 +1221,6 @@ fn calculate_array_element_address(
         context.emit(&format!("    add {0}, {0}, s0", addr_reg));
     }
 
-    // Free temporary registers
     for reg in index_regs {
         context.free_register(&reg);
     }
@@ -1421,7 +1239,7 @@ fn collect_array_access(node: &AstNode) -> Result<(String, Vec<AstNode>), Compil
                 current = array;
             },
             AstNode::Identifier(name) => {
-                indices.reverse(); // Correct order: [i, j] for x[i][j]
+                indices.reverse();
                 return Ok((name.clone(), indices));
             },
             _ => return Err(CompileError::CodegenError("Invalid array access".to_string())),
@@ -1429,21 +1247,16 @@ fn collect_array_access(node: &AstNode) -> Result<(String, Vec<AstNode>), Compil
     }
 }
 
-// Add new function for generating float constant code
 fn generate_float_constant(value: f64, context: &mut CodeGenContext) -> Result<String, CompileError> {
-    let reg = context.get_fp_register();
-
-    // For floating-point constants, we need to load from a data section label
     let label = context.generate_label("float_const");
+    let reg = context.get_fp_register();
     context.emit_data(&format!("{}:", label));
     context.emit_data(&format!("    .word 0x{:08x}  # float {}", f32::to_bits(value as f32), value));
 
-    // Load the float into a register
     let temp_reg = context.get_register();
     context.emit(&format!("    la {}, {}", temp_reg, label));
     context.emit(&format!("    flw {}, 0({})", reg, temp_reg));
     context.free_register(&temp_reg);
-
     Ok(reg)
 }
 
@@ -1459,22 +1272,14 @@ fn generate_double_constant(value: f64, context: &mut CodeGenContext) -> Result<
     Ok(reg)
 }
 
-// Add a new function for floating-point binary operations
-fn generate_fp_binary_operation(
-    op: &str,
-    left: &AstNode,
-    right: &AstNode,
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
-    // Generate code for operands
+fn generate_fp_binary_operation(op: &str, left: &AstNode, right: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let left_reg = generate_expression(left, context)?;
     let right_reg = generate_expression(right, context)?;
 
-    // Determine if we need to convert integer operands to floating-point
-    let left_type = get_expression_type(left, context)?;  // For debugging or later use
+    let left_type = get_expression_type(left, context)?;
     let right_type = get_expression_type(right, context)?;
 
-    let left_fp_reg = if !left_reg.starts_with('f') {
+    let left_fp_reg = if !left_reg.starts_with('f'){
         let fp_reg = context.get_fp_register();
         context.emit(&format!("    fcvt.s.w {}, {}", fp_reg, left_reg));
         context.free_register(&left_reg);
@@ -1492,7 +1297,6 @@ fn generate_fp_binary_operation(
         right_reg
     };
 
-    // Handle floating-point operations
     let result_reg = match op {
         "+" => {
             context.emit(&format!("    fadd.s {}, {}, {}", left_fp_reg, left_fp_reg, right_fp_reg));
@@ -1510,18 +1314,17 @@ fn generate_fp_binary_operation(
             context.emit(&format!("    fdiv.s {}, {}, {}", left_fp_reg, left_fp_reg, right_fp_reg));
             left_fp_reg
         },
-        // For comparisons, we need to use floating-point comparison instructions
-        "==" => {
-            let int_reg = context.get_register();
-            context.emit(&format!("    feq.s {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
-            context.free_fp_register(&left_fp_reg);
-            context.free_fp_register(&right_fp_reg);
-            int_reg
-        },
         "!=" => {
             let int_reg = context.get_register();
             context.emit(&format!("    feq.s {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
             context.emit(&format!("    xori {}, {}, 1", int_reg, int_reg));
+            context.free_fp_register(&left_fp_reg);
+            context.free_fp_register(&right_fp_reg);
+            int_reg
+        },
+        "==" => {
+            let int_reg = context.get_register();
+            context.emit(&format!("    feq.s {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
             context.free_fp_register(&left_fp_reg);
             context.free_fp_register(&right_fp_reg);
             int_reg
@@ -1557,7 +1360,6 @@ fn generate_fp_binary_operation(
         _ => return Err(CompileError::CodegenError(format!("Invalid floating-point operation: {}", op))),
     };
 
-    // Free the right register if it's not the same as the result
     if right_fp_reg != result_reg {
         if right_fp_reg.starts_with('f') {
             context.free_fp_register(&right_fp_reg);
@@ -1565,32 +1367,21 @@ fn generate_fp_binary_operation(
             context.free_register(&right_fp_reg);
         }
     }
-
     Ok(result_reg)
 }
 
-fn generate_double_binary_operation(
-    op: &str,
-    left: &AstNode,
-    right: &AstNode,
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
-    // Generate code for operands
+fn generate_double_binary_operation(op: &str, left: &AstNode, right: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let left_reg = generate_expression(left, context)?;
-    let right_reg = generate_expression(right, context)?;
-
-    // Determine operand types (e.g., "double" or "float")
     let left_type = get_expression_type(left, context)?;
+    let right_reg = generate_expression(right, context)?;
     let right_type = get_expression_type(right, context)?;
 
-    // Convert left operand to double if needed
     let left_fp_reg = if !left_reg.starts_with('f') && left_type == "double" {
         let fp_reg = context.get_fp_register();
         context.emit(&format!("    fcvt.d.w {}, {}", fp_reg, left_reg));
         context.free_register(&left_reg);
         fp_reg
     } else if !left_reg.starts_with('f') && left_type == "float" {
-        // Convert single precision float to double precision
         let fp_reg = context.get_fp_register();
         context.emit(&format!("    fcvt.d.s {}, {}", fp_reg, left_reg));
         context.free_register(&left_reg);
@@ -1599,14 +1390,12 @@ fn generate_double_binary_operation(
         left_reg
     };
 
-    // Convert right operand to double if needed
     let right_fp_reg = if !right_reg.starts_with('f') && right_type == "double" {
         let fp_reg = context.get_fp_register();
         context.emit(&format!("    fcvt.d.w {}, {}", fp_reg, right_reg));
         context.free_register(&right_reg);
         fp_reg
     } else if !right_reg.starts_with('f') && right_type == "float" {
-        // Convert single precision float to double precision
         let fp_reg = context.get_fp_register();
         context.emit(&format!("    fcvt.d.s {}, {}", fp_reg, right_reg));
         context.free_register(&right_reg);
@@ -1615,7 +1404,6 @@ fn generate_double_binary_operation(
         right_reg
     };
 
-    // Handle floating-point operations using double-precision instructions
     let result_reg = match op {
         "+" => {
             context.emit(&format!("    fadd.d {}, {}, {}", left_fp_reg, left_fp_reg, right_fp_reg));
@@ -1633,18 +1421,17 @@ fn generate_double_binary_operation(
             context.emit(&format!("    fdiv.d {}, {}, {}", left_fp_reg, left_fp_reg, right_fp_reg));
             left_fp_reg
         },
-        // Comparisons: the result is stored in an integer register
-        "==" => {
-            let int_reg = context.get_register();
-            context.emit(&format!("    feq.d {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
-            context.free_fp_register(&left_fp_reg);
-            context.free_fp_register(&right_fp_reg);
-            int_reg
-        },
         "!=" => {
             let int_reg = context.get_register();
             context.emit(&format!("    feq.d {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
             context.emit(&format!("    xori {}, {}, 1", int_reg, int_reg));
+            context.free_fp_register(&left_fp_reg);
+            context.free_fp_register(&right_fp_reg);
+            int_reg
+        },
+        "==" => {
+            let int_reg = context.get_register();
+            context.emit(&format!("    feq.d {}, {}, {}", int_reg, left_fp_reg, right_fp_reg));
             context.free_fp_register(&left_fp_reg);
             context.free_fp_register(&right_fp_reg);
             int_reg
@@ -1680,7 +1467,6 @@ fn generate_double_binary_operation(
         _ => return Err(CompileError::CodegenError(format!("Invalid floating-point operation: {}", op))),
     };
 
-    // Free the right register if it's not the same as the result
     if right_fp_reg != result_reg {
         if right_fp_reg.starts_with('f') {
             context.free_fp_register(&right_fp_reg);
@@ -1688,16 +1474,10 @@ fn generate_double_binary_operation(
             context.free_register(&right_fp_reg);
         }
     }
-
     Ok(result_reg)
 }
 
-fn generate_ternary_operation(
-    condition: &AstNode,
-    true_expr: &AstNode,
-    false_expr: &AstNode,
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
+fn generate_ternary_operation(condition: &AstNode, true_expr: &AstNode, false_expr: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let cond_reg = generate_expression(condition, context)?;
     let true_label = context.generate_label("ternary_true");
     let end_label = context.generate_label("ternary_end");
@@ -1710,11 +1490,10 @@ fn generate_ternary_operation(
 
     context.emit(&format!("{}:", true_label));
     let true_reg = generate_expression(true_expr, context)?;
-
     context.emit(&format!("{}:", end_label));
 
     let mut result_reg = context.get_register();
-    if true_reg != false_reg {
+    if true_reg != false_reg{
         context.emit(&format!("    mv {}, {}", result_reg, true_reg));
         context.free_register(&true_reg);
         context.free_register(&false_reg);
@@ -1725,34 +1504,22 @@ fn generate_ternary_operation(
     Ok(result_reg)
 }
 
-/// Determine the result type of a binary operation
-pub fn get_binary_operation_type(
-    op: &str,
-    left: &AstNode,
-    right: &AstNode,
-    context: &mut CodeGenContext
-) -> Result<String, CompileError> {
+pub fn get_binary_operation_type(op: &str, left: &AstNode, right: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let left_type = get_expression_type(left, context)?;
     let right_type = get_expression_type(right, context)?;
 
-    // Special handling for pointer arithmetic
     if (op == "+" || op == "-") && (left_type.ends_with('*') || right_type.ends_with('*')) {
         if left_type.ends_with('*') && (op == "+" || op == "-") && !right_type.ends_with('*') {
-            // ptr + int or ptr - int: result is the same pointer type
             return Ok(left_type);
         } else if right_type.ends_with('*') && op == "+" && !left_type.ends_with('*') {
-            // int + ptr: result is the pointer type
             return Ok(right_type);
         } else if left_type.ends_with('*') && right_type.ends_with('*') && op == "-" {
-            // ptr - ptr: result is an integer
             return Ok("int".to_string());
         }
     }
 
-    // Regular binary operations
     match op {
-        // ... existing code for other operations ...
-        _ => {
+        _ => { // Basically indirect type checking for binary ops but very basic
             if left_type == right_type {
                 Ok(left_type)
             } else {
@@ -1764,7 +1531,6 @@ pub fn get_binary_operation_type(
     }
 }
 
-// Update the get_expression_type function to handle binary operations with pointers
 pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Result<String, CompileError> {
     println!("Debug node: {:?}", node);
 
@@ -1777,7 +1543,6 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
             if let Some(symbol) = context.lookup_symbol(name) {
                 Ok(symbol.type_info.clone())
             } else {
-                // Could be a function name without a call
                 if let Some(return_type) = context.get_function_return_type(name) {
                     Ok(return_type)
                 } else {
@@ -1828,15 +1593,12 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 if let Some(return_type) = context.get_function_return_type(func_name) {
                     Ok(return_type)
                 } else {
-                    // Default to int
                     Ok("int".to_string())
                 }
             } else {
-                // Handle function pointers or complex expressions later
                 Ok("int".to_string())
             }
         },
-        // For binary operations, determine return type based on operands
         AstNode::BinaryOperation { op, left, right, .. } => {
             get_binary_operation_type(op, left, right, context)
         },
@@ -1855,25 +1617,19 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 Ok("int".to_string())
             }
         },
-        // Handle array subscript operations
         AstNode::ArraySubscript { array, index } => {
-            // Get the type of the array or pointer
             let array_type = get_expression_type(array, context)?;
             println!("Array Name: {:?}, ArraySubscript base type: {}", array, array_type);
 
             if let AstNode::Identifier(name) = &**array {
                 if let Some(symbol) = context.lookup_symbol(name) {
-                    println!("Symbol info for {}: is_pointer={}, type_info={}",
-                        name, symbol.is_pointer, symbol.type_info);
+                    println!("Symbol info for {}: is_pointer={}, type_info={}", name, symbol.is_pointer, symbol.type_info);
 
-                    // If it's an array, return the element type
                     if !symbol.dimensions.is_empty() && !symbol.is_pointer {
-                        // Remove potential array indicator in type_info (e.g., "int[]" -> "int")
                         let base_type = symbol.type_info.split('[').next().unwrap_or(&symbol.type_info).to_string();
                         return Ok(base_type);
                     }
 
-                    // For pointers, remove one level of pointer indirection
                     if symbol.type_info.ends_with('*') {
                         return Ok(symbol.type_info.trim_end_matches('*').to_string());
                     }
@@ -1883,9 +1639,7 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
                     Ok("int".to_string())
                 }
             } else {
-                // If it's a pointer type (array_type ends with *)
                 if array_type.ends_with('*') {
-                    // Remove one level of pointer, e.g., "int**" -> "int*"
                     return Ok(array_type.trim_end_matches('*').to_string());
                 }
 
@@ -1893,27 +1647,22 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
             }
         },
         AstNode::SizeofType { .. } | AstNode::SizeofExpr { .. } => {
-            // sizeof always returns an integer
             Ok("int".to_string())
         },
-        // Handle other expression types
         _ => {
             println!("Unhandled node type for type checking: {:?}", node);
-            Ok("int".to_string()) // Default to int for unknown expressions
+            Ok("int".to_string())
         }
     };
 
-    // Print the final type result
     if let Ok(ref type_str) = result {
         println!("Expression type result: {}", type_str);
     } else if let Err(ref error) = result {
         println!("Expression type error: {:?}", error);
     }
-
     result
 }
 
-/// Generate code for a struct member access
 fn generate_member_access(object: &AstNode, member: &str, context: &mut CodeGenContext) -> Result<String, CompileError> {
     let member_str = member.to_string();
 
@@ -1931,7 +1680,6 @@ fn generate_member_access(object: &AstNode, member: &str, context: &mut CodeGenC
                     ));
                 }
                 let struct_name = type_info["struct ".len()..].to_string();
-
                 let struct_def = context.struct_definitions.get(&struct_name).ok_or_else(|| CompileError::CodegenError(format!("Unknown struct type: {}", struct_name)))?;
                 let field_info = struct_def.fields.get(&member_str).ok_or_else(|| CompileError::CodegenError(format!("Struct {} has no member named {}", struct_name, member_str)))?;
 
@@ -2009,7 +1757,7 @@ fn generate_member_access(object: &AstNode, member: &str, context: &mut CodeGenC
 
 fn get_type_size(type_spec: &TypeSpecifier, pointer_level: usize, context: &mut CodeGenContext) -> i32 {
     if pointer_level > 0 {
-        return 4; // All pointers are 4 bytes
+        return 4;
     }
 
     match type_spec {
@@ -2018,9 +1766,8 @@ fn get_type_size(type_spec: &TypeSpecifier, pointer_level: usize, context: &mut 
         TypeSpecifier::Unsigned => 4,
         TypeSpecifier::Float => 4,
         TypeSpecifier::Double => 8,
-        TypeSpecifier::Void => 1, // Technically 0, but often 1 in C
+        TypeSpecifier::Void => 1,
         TypeSpecifier::Struct(name) => {
-            // Look up the struct definition to calculate its size
             if let Some(struct_def) = context.struct_definitions.get(name) {
                 struct_def.total_size as i32
             } else {
@@ -2032,10 +1779,9 @@ fn get_type_size(type_spec: &TypeSpecifier, pointer_level: usize, context: &mut 
     }
 }
 
-// Helper function to get size from a type string
 fn get_size_from_type_string(type_str: &str, context: &mut CodeGenContext) -> i32 {
     if type_str.ends_with('*') {
-        return 4; // All pointers are 4 bytes
+        return 4;
     }
 
     match type_str {
@@ -2046,7 +1792,6 @@ fn get_size_from_type_string(type_str: &str, context: &mut CodeGenContext) -> i3
         "double" => 8,
         "void" => 1,
         _ if type_str.starts_with("struct ") => {
-            // Look up the struct definition to calculate its size
             let struct_name = type_str["struct ".len()..].to_string();
             if let Some(struct_def) = context.struct_definitions.get(&struct_name) {
                 struct_def.total_size as i32

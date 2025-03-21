@@ -8,10 +8,9 @@ use crate::ast::TypeSpecifier;
 use crate::error::CompileError;
 use crate::codegen::context::CodeGenContext;
 
-/// Generate RISC-V assembly code from an AST
+
 pub fn generate_code(ast: &AstNode) -> Result<(String, CodeGenContext), CompileError> {
     let mut context = CodeGenContext::new();
-    // Generate code for each top-level declaration
     match ast {
         AstNode::FunctionDefinition { .. } => {
             function::generate_function(ast, &mut context)?;
@@ -35,8 +34,7 @@ pub fn generate_code(ast: &AstNode) -> Result<(String, CodeGenContext), CompileE
                     } else {
                         None
                     }
-                })
-                .collect();
+                }).collect();
             context.register_struct(name.clone(), struct_fields);
         },
         AstNode::Declaration { .. } => {
@@ -67,8 +65,7 @@ pub fn generate_code(ast: &AstNode) -> Result<(String, CodeGenContext), CompileE
                                 } else {
                                     None
                                 }
-                            })
-                            .collect();
+                            }).collect();
                         context.register_struct(name.clone(), struct_fields);
                     },
                     _ => {

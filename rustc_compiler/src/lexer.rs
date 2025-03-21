@@ -1,8 +1,6 @@
-// src/lexer.rs
-
 use logos::Logos;
 use crate::error::CompileError;
-/// The set of tokens that our C90 lexer will recognize.
+
 /// Keyword tokens are suffixed with Kw to differentiate them from the literal tokens
 #[derive(Logos, Debug, PartialEq, Clone)]
 pub enum Token {

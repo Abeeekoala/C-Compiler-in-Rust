@@ -1,4 +1,3 @@
-// src/analyzer.rs
 use crate::ast::{AstNode, TypeSpecifier};
 
 pub fn compute_local_stack_size(ast: &AstNode) -> i32 {
@@ -18,7 +17,6 @@ pub fn compute_local_stack_size(ast: &AstNode) -> i32 {
 }
 
 fn get_type_size(type_spec: &TypeSpecifier) -> i32 {
-    // Simple mapping (aligned to 4 bytes)
     match type_spec {
         TypeSpecifier::Int => 4,
         TypeSpecifier::Float => 4,

@@ -2,9 +2,7 @@
 
 use crate::ast::SwitchCase;
 use crate::lexer::Token;
-use crate::ast::{AstNode, TypeSpecifier, Context};
-use std::iter::Peekable;
-use std::vec::IntoIter;
+use crate::ast::{AstNode, TypeSpecifier};
 use std::collections::HashMap;
 use crate::error::CompileError;
 
@@ -12,13 +10,12 @@ use crate::error::CompileError;
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
-    type_defs: HashMap<String, (TypeSpecifier, usize)>, // Track typedef names
+    type_defs: HashMap<String, (TypeSpecifier, usize)>,
 }
 
 type ParseResult = Result<AstNode, CompileError>;
 
 impl Parser {
-    /// Create a new parser from a vector of tokens
     pub fn new(tokens: Vec<Token>) -> Self {
         Parser {
             tokens,
@@ -27,7 +24,6 @@ impl Parser {
         }
     }
 
-    /// Peek at the current token without consuming it
     fn peek(&self) -> Option<&Token> {
         if self.current < self.tokens.len() {
             Some(&self.tokens[self.current])
@@ -36,7 +32,6 @@ impl Parser {
         }
     }
 
-    /// Advance to the next token and return the previous token
     fn advance(&mut self) -> Option<Token> {
         if self.current < self.tokens.len() {
             let token = self.tokens[self.current].clone();
@@ -47,7 +42,6 @@ impl Parser {
         }
     }
 
-    /// Parse a translation unit (the root of the AST)
     pub fn parse_translation_unit(&mut self) -> ParseResult {
         let mut declarations = Vec::new();
 
@@ -63,11 +57,9 @@ impl Parser {
         Ok(AstNode::NodeList(declarations))
     }
 
-    /// Parse an external declaration (function or global variable)
     fn parse_external_declaration(&mut self) -> ParseResult {
         let start_pos = self.current;
 
-        // Check for typedef declaration
         if let Some(Token::TypedefKw) = self.peek() {
             return self.parse_typedef_declaration();
         }
@@ -94,7 +86,6 @@ impl Parser {
         let identifier = self.parse_identifier()?;
         let declarator = AstNode::Identifier(identifier);
 
-        // For function declarations
         if let Some(Token::LParen) = self.peek() {
             self.advance();
             let parameters = self.parse_parameter_list()?;
@@ -118,7 +109,6 @@ impl Parser {
                 });
             }
         } else {
-            // For variable declarations
             let mut final_declarator = declarator;
             for _ in 0..pointer_level {
                 final_declarator = AstNode::PointerDeclarator { pointee: Box::new(final_declarator) };
@@ -149,9 +139,7 @@ impl Parser {
 
     /// Parse a typedef declaration
     fn parse_typedef_declaration(&mut self) -> ParseResult {
-        self.advance(); // Consume 'typedef'
-
-        // Parse the base type
+        self.advance();
         let (mut type_spec, mut pointer_level) = self.parse_type_specifier()?;
 
         while let TypeSpecifier::TypedefName(name) = &type_spec {
@@ -162,18 +150,16 @@ impl Parser {
                 return Err(CompileError::ParserError(format!("Undefined typedef '{}'", name)));
             }
         }
-        // Parse the alias identifier
-        let alias = self.parse_identifier()?;
 
-        // Build the declarator
+        let alias = self.parse_identifier()?;
         let mut declarator = AstNode::Identifier(alias.clone());
+
         for _ in 0..pointer_level {
             declarator = AstNode::PointerDeclarator {
                 pointee: Box::new(declarator),
             };
         }
 
-        // Check for array dimensions
         while let Some(Token::LBracket) = self.peek() {
             self.advance();
             let size = self.parse_expression()?;
@@ -192,7 +178,6 @@ impl Parser {
         })
     }
 
-    /// Parse declaration specifiers
     fn parse_declaration_specifiers(&mut self) -> Result<TypeSpecifier, CompileError> {
         let token = self.peek().ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?;
 
@@ -251,7 +236,6 @@ impl Parser {
             if *token == Token::RBrace {
                 break;
             }
-
             let (field_type, _) = self.parse_type_specifier()?;
             let field_name = self.parse_identifier()?;
             let field_node = AstNode::StructField {
@@ -262,7 +246,6 @@ impl Parser {
             fields.push(Box::new(field_node));
             self.expect_token(Token::Semicolon)?;
         }
-
         Ok(fields)
     }
 
@@ -303,7 +286,7 @@ impl Parser {
         let mut pointers = 0;
         // Count the number of pointer levels
         while let Some(Token::Mul) = self.peek() {
-            self.advance(); // Consume '*'
+            self.advance();
             pointers += 1;
         }
 
@@ -320,14 +303,12 @@ impl Parser {
             };
         }
 
-        // Wrap the declarator in PointerDeclarator nodes for each '*'
         let mut result = declarator;
         for _ in 0..pointers {
             result = AstNode::PointerDeclarator {
                 pointee: Box::new(result),
             };
         }
-
         Ok(result)
     }
 
@@ -355,7 +336,6 @@ impl Parser {
 
         self.expect_token(Token::Semicolon)?;
 
-        // Wrap declarator in PointerDeclarator nodes based on pointer_level
         let mut final_declarator = declarator;
         for _ in 0..pointer_level {
             final_declarator = AstNode::PointerDeclarator {
@@ -371,7 +351,6 @@ impl Parser {
     }
 
 
-    /// Parse a compound statement
     fn parse_compound_statement(&mut self) -> ParseResult {
         self.expect_token(Token::LBrace)?;
         let mut statements = Vec::new();
@@ -384,26 +363,20 @@ impl Parser {
         Ok(AstNode::BlockStatement(statements))
     }
 
-    /// Parse a statement
     pub fn parse_statement(&mut self) -> Result<AstNode, CompileError> {
         match self.peek() {
-            // Handle enum definition within function
             Some(Token::EnumKw) => {
-                // Parse an enum declaration as a statement (inside a function)
                 let start_pos = self.current;
                 let result = self.parse_enum_declaration();
 
                 match result {
                     Ok(AstNode::TypeSpecifier(_)) => {
-                        // If it's just a type reference without a definition,
-                        // reset and try parsing as a variable declaration
                         self.current = start_pos;
                         self.parse_declaration()
                     },
                     _ => result
                 }
             },
-            // Handle struct declaration within function
             Some(Token::StructKw) => {
                 self.advance();
 
@@ -481,13 +454,11 @@ impl Parser {
                 self.parse_typedef_declaration()
             },
             _ => {
-                // If it fails just send it back
                 self.parse_expression_statement()
             }
         }
     }
 
-    /// Switch statement parsing
     fn parse_switch_statement(&mut self) -> ParseResult {
         self.advance();
         self.expect_token(Token::LParen)?;
@@ -556,7 +527,6 @@ impl Parser {
         }
     }
 
-    /// Parse for loops
     fn parse_for_statement(&mut self) -> ParseResult {
         self.advance();
         self.expect_token(Token::LParen)?;
@@ -568,7 +538,7 @@ impl Parser {
         };
 
         let condition = if self.check_token(Token::Semicolon) {
-            AstNode::IntConstant(1) // Default true
+            AstNode::IntConstant(1) // Default we set to true here
         } else {
             let expr = self.parse_expression()?;
             self.expect_token(Token::Semicolon)?;
@@ -592,7 +562,6 @@ impl Parser {
         })
     }
 
-    /// Parse while loops
     fn parse_while_statement(&mut self) -> Result<AstNode, CompileError> {
         self.advance();
         self.expect_token(Token::LParen)?;
@@ -606,12 +575,11 @@ impl Parser {
         })
     }
 
-    /// Parse a return statement
     fn parse_return_statement(&mut self) -> ParseResult {
-        self.advance(); // Consume 'return'
+        self.advance();
 
         let expr = if let Some(Token::Semicolon) = self.peek() {
-            None // return; (no expression)
+            None // return;
         } else {
             Some(Box::new(self.parse_expression()?))
         };
@@ -621,7 +589,6 @@ impl Parser {
         Ok(AstNode::ReturnStatement(expr))
     }
 
-    /// Parse an expression statement
     pub fn parse_expression_statement(&mut self) -> ParseResult {
         if let Some(Token::Semicolon) = self.peek() {
             self.advance();
@@ -633,12 +600,11 @@ impl Parser {
         Ok(AstNode::ExpressionStatement(Box::new(expr)))
     }
 
-    /// Parse an expression
     fn parse_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_assignment_expression()?;
 
         while let Some(Token::Comma) = self.peek() {
-            self.advance(); // Consume ','
+            self.advance();
             let right = self.parse_assignment_expression()?;
             expr = AstNode::BinaryOperation {
                 op: ",".to_string(),
@@ -650,13 +616,12 @@ impl Parser {
         Ok(expr)
     }
 
-    /// Parse assignment expressions
     fn parse_assignment_expression(&mut self) -> ParseResult {
         let lhs = self.parse_conditional_expression()?;
 
         match self.peek() {
             Some(Token::Assign) => {
-                self.advance(); // Consume '='
+                self.advance();
                 let rhs = self.parse_assignment_expression()?;
                 return Ok(AstNode::Assignment {
                     lhs: Box::new(lhs),
@@ -664,7 +629,7 @@ impl Parser {
                 });
             },
             Some(Token::AddAssign) => {
-                self.advance(); // Consume '+='
+                self.advance();
                 let rhs = self.parse_assignment_expression()?;
                 return Ok(AstNode::Assignment {
                     lhs: Box::new(lhs.clone()),
@@ -676,7 +641,7 @@ impl Parser {
                 });
             },
             Some(Token::SubAssign) => {
-                self.advance(); // Consume '-='
+                self.advance();
                 let rhs = self.parse_assignment_expression()?;
                 return Ok(AstNode::Assignment {
                     lhs: Box::new(lhs.clone()),
@@ -688,7 +653,7 @@ impl Parser {
                 });
             },
             Some(Token::MulAssign) => {
-                self.advance(); // Consune '*='
+                self.advance();
                 let rhs = self.parse_assignment_expression()?;
                 return Ok(AstNode::Assignment {
                     lhs: Box::new(lhs.clone()),
@@ -700,7 +665,7 @@ impl Parser {
                 });
             },
             Some(Token::DivAssign) => {
-                self.advance(); // Consume '/='
+                self.advance();
                 let rhs = self.parse_assignment_expression()?;
                 return Ok(AstNode::Assignment {
                     lhs: Box::new(lhs.clone()),
@@ -712,7 +677,7 @@ impl Parser {
                 });
             },
             Some(Token::ModAssign) => {
-                self.advance(); // Consume '%='
+                self.advance();
                 let rhs = self.parse_assignment_expression()?;
                 return Ok(AstNode::Assignment {
                     lhs: Box::new(lhs.clone()),
@@ -744,16 +709,14 @@ impl Parser {
                 false_expr: Box::new(false_expr),
             });
         }
-
         Ok(condition)
     }
 
-    /// Parse logical OR expression
     fn parse_logical_or_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_logical_and_expression()?;
 
         while let Some(Token::LogicOr) = self.peek() {
-            self.advance(); // Consume '||'
+            self.advance();
             let right = self.parse_logical_and_expression()?;
             expr = AstNode::BinaryOperation {
                 op: "||".to_string(),
@@ -761,16 +724,14 @@ impl Parser {
                 right: Box::new(right),
             };
         }
-
         Ok(expr)
     }
 
-    /// Parse logical AND expression
     fn parse_logical_and_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_inclusive_or_expression()?;
 
         while let Some(Token::LogicAnd) = self.peek() {
-            self.advance(); // Consume '&&'
+            self.advance();
             let right = self.parse_inclusive_or_expression()?;
             expr = AstNode::BinaryOperation {
                 op: "&&".to_string(),
@@ -778,11 +739,9 @@ impl Parser {
                 right: Box::new(right),
             };
         }
-
         Ok(expr)
     }
 
-    /// Parse inclusive OR expression
     fn parse_inclusive_or_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_exclusive_or_expression()?;
 
@@ -795,11 +754,9 @@ impl Parser {
                 right: Box::new(right),
             };
         }
-
         Ok(expr)
     }
 
-    /// Parse exclusive OR expression
     fn parse_exclusive_or_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_and_expression()?;
 
@@ -816,7 +773,6 @@ impl Parser {
         Ok(expr)
     }
 
-    /// Parse AND expression
     fn parse_and_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_equality_expression()?;
 
@@ -829,11 +785,9 @@ impl Parser {
                 right: Box::new(right),
             };
         }
-
         Ok(expr)
     }
 
-    /// Parse equality expression
     fn parse_equality_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_relational_expression()?;
 
@@ -852,11 +806,9 @@ impl Parser {
                 right: Box::new(right),
             };
         }
-
         Ok(expr)
     }
 
-    /// Parse relational expression
     fn parse_relational_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_shift_expression()?;
 
@@ -877,11 +829,9 @@ impl Parser {
                 right: Box::new(right),
             };
         }
-
         Ok(expr)
     }
 
-    /// Parse shift expression
     fn parse_shift_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_additive_expression()?;
 
@@ -904,7 +854,6 @@ impl Parser {
         Ok(expr)
     }
 
-    /// Parse additive expression
     fn parse_additive_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_multiplicative_expression()?;
 
@@ -927,7 +876,6 @@ impl Parser {
         Ok(expr)
     }
 
-    /// Parse multiplicative expression
     fn parse_multiplicative_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_unary_expression()?;
 
@@ -951,11 +899,10 @@ impl Parser {
         Ok(expr)
     }
 
-    /// Parse unary expression
     fn parse_unary_expression(&mut self) -> ParseResult {
         match self.peek() {
             Some(Token::Add) => {
-                self.advance(); // Consume '+'
+                self.advance();
                 let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "+".to_string(),
@@ -963,7 +910,7 @@ impl Parser {
                 })
             },
             Some(Token::Sub) => {
-                self.advance(); // Consume '-'
+                self.advance();
                 let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "-".to_string(),
@@ -971,7 +918,7 @@ impl Parser {
                 })
             },
             Some(Token::Tilde) => {
-                self.advance(); // Consume '~'
+                self.advance();
                 let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "~".to_string(),
@@ -979,7 +926,7 @@ impl Parser {
                 })
             },
             Some(Token::Not) => {
-                self.advance(); // Consume '!'
+                self.advance();
                 let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "!".to_string(),
@@ -987,7 +934,7 @@ impl Parser {
                 })
             },
             Some(Token::PlusPlus) => {
-                self.advance(); // Consume '++'
+                self.advance();
                 let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "++".to_string(),
@@ -995,7 +942,7 @@ impl Parser {
                 })
             },
             Some(Token::MinusMinus) => {
-                self.advance(); // Consume '--'
+                self.advance();
                 let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "--".to_string(),
@@ -1003,15 +950,15 @@ impl Parser {
                 })
             },
             Some(Token::Mul) => { // Pointer dereference
-                self.advance(); // Consume '*'
+                self.advance();
                 let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "*".to_string(),
                     operand: Box::new(expr),
                 })
             },
-            Some(Token::BitAnd) => { // Address-of operator
-                self.advance(); // Consume '&'
+            Some(Token::BitAnd) => {
+                self.advance();
                 let expr = self.parse_unary_expression()?;
                 Ok(AstNode::UnaryOperation {
                     op: "&".to_string(),
@@ -1021,29 +968,23 @@ impl Parser {
             Some(Token::SizeofKw) => {
                 self.advance();
 
-                // Check if the next token is a left parenthesis
                 if let Some(Token::LParen) = self.peek() {
-                    self.advance(); // Consume the '('
+                    self.advance();
 
-                    // Try to parse as a type name first
                     if let Ok((type_spec, pointer_level)) = self.parse_type_specifier() {
                         self.expect_token(Token::RParen)?;
-                        // Create a SizeofType node
                         return Ok(AstNode::SizeofType {
                             type_spec,
                             pointer_level
                         });
                     } else {
-                        // If not a type, must be an expression
                         let expr = self.parse_expression()?;
                         self.expect_token(Token::RParen)?;
-
                         return Ok(AstNode::SizeofExpr {
                             expr: Box::new(expr)
                         });
                     }
                 } else {
-                    // sizeof followed by an unary expression without parentheses
                     let operand = self.parse_unary_expression()?;
                     return Ok(AstNode::SizeofExpr {
                         expr: Box::new(operand)
@@ -1054,7 +995,6 @@ impl Parser {
         }
     }
 
-    /// Parse postfix expression
     fn parse_postfix_expression(&mut self) -> ParseResult {
         let mut expr = self.parse_primary_expression()?;
 
@@ -1074,11 +1014,11 @@ impl Parser {
 
                     let mut args = Vec::new();
                     if let Some(Token::RParen) = self.peek() {
-                        // Empty argument list
+                        // Empty list
                     } else {
                         args.push(Box::new(self.parse_assignment_expression()?));
                         while let Some(Token::Comma) = self.peek() {
-                            self.advance(); // Consume ','
+                            self.advance();
                             args.push(Box::new(self.parse_assignment_expression()?));
                         }
                     }
@@ -1090,14 +1030,14 @@ impl Parser {
                     };
                 },
                 Some(Token::PlusPlus) => {
-                    self.advance(); // Consume '++'
+                    self.advance();
                     expr = AstNode::UnaryOperation {
                         op: "post++".to_string(),
                         operand: Box::new(expr),
                     };
                 },
                 Some(Token::MinusMinus) => {
-                    self.advance(); // Consume '--'
+                    self.advance();
                     expr = AstNode::UnaryOperation {
                         op: "post--".to_string(),
                         operand: Box::new(expr),
@@ -1118,7 +1058,6 @@ impl Parser {
         Ok(expr)
     }
 
-    /// Parse primary expression (literals, identifiers, and parenthesized expressions)
     fn parse_primary_expression(&mut self) -> ParseResult {
         match self.peek() {
             Some(Token::IntLiteralDec((value, _))) |
@@ -1149,9 +1088,9 @@ impl Parser {
                 Ok(AstNode::Identifier(id))
             },
             Some(Token::LParen) => {
-                self.advance(); // Consume '('
+                self.advance();
                 let expr = self.parse_expression()?;
-                self.expect_token(Token::RParen)?; // Expect ')'
+                self.expect_token(Token::RParen)?;
                 Ok(expr)
             },
             Some(token) => Err(CompileError::ParserError(format!("Expected primary expression, found {:?}", token))),
@@ -1159,9 +1098,9 @@ impl Parser {
         }
     }
 
-    /// Parse an if statement
+
     fn parse_if_statement(&mut self) -> ParseResult {
-        self.advance(); // Consume 'if'
+        self.advance();
         self.expect_token(Token::LParen)?;
         let condition = self.parse_expression()?;
         self.expect_token(Token::RParen)?;
@@ -1192,7 +1131,6 @@ impl Parser {
         }
     }
 
-    /// Just a helper to check if the token is what was expected
     fn check_token(&mut self, expected: Token) -> bool {
         if let Some(token) = self.peek() {
             token == &expected
@@ -1201,11 +1139,8 @@ impl Parser {
         }
     }
 
-    /// Parses an identifier
     pub fn parse_identifier(&mut self) -> Result<String, CompileError> {
-        let token_clone = self.peek()
-            .ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?
-            .clone();
+        let token_clone = self.peek().ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?.clone();
 
         match token_clone {
             Token::Identifier(name) => {
@@ -1216,11 +1151,9 @@ impl Parser {
         }
     }
 
-    /// Parses a type specifier like int, char, void...
     pub fn parse_type_specifier(&mut self) -> Result<(TypeSpecifier, usize), CompileError> {
         let token = self.peek().ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?;
 
-        // First, parse the base type
         let base_type = match token {
             Token::IntKw => {
                 self.advance();
@@ -1244,7 +1177,6 @@ impl Parser {
             },
             Token::UnsignedKw => {
                 self.advance();
-                // Check if next token is int(optional)
                 if let Some(Token::IntKw) = self.peek() {
                     self.advance();
                 }
@@ -1261,7 +1193,6 @@ impl Parser {
                         self.expect_token(Token::RBrace)?;
                         TypeSpecifier::Struct(struct_name)
                     } else {
-                        // Just the type reference
                         TypeSpecifier::Struct(struct_name)
                     }
                 } else {
@@ -1275,20 +1206,17 @@ impl Parser {
                     self.advance();
 
                     if let Some(Token::LBrace) = self.peek() {
-                        // Full enum definition
                         self.advance();
                         let values = self.parse_enum_values()?;
                         self.expect_token(Token::RBrace)?;
                         TypeSpecifier::Enum(enum_name)
                     } else {
-                        // Reference to enum type
                         TypeSpecifier::Enum(enum_name)
                     }
                 } else {
                     return Err(CompileError::ParserError("Expected identifier after 'enum'".to_string()));
                 }
             },
-            // Check for typedef name else return parser error
             Token::Identifier(name) => {
                 if self.type_defs.contains_key(name) {
                     let type_name = name.clone();
@@ -1301,17 +1229,15 @@ impl Parser {
             _ => return Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token))),
         };
 
-        // Now, count pointer levels (*) after the base type
         let mut pointer_level = 0;
         while let Some(Token::Mul) = self.peek() {
-            self.advance(); // Consume *
+            self.advance();
             pointer_level += 1;
         }
 
         Ok((base_type, pointer_level))
     }
 
-    /// Parse a function parameter declarator
     fn parse_parameter_declaration(&mut self) -> Result<AstNode, CompileError> {
         let (type_specifier, pointer_level) = self.parse_type_specifier()?;
         let declarator = self.parse_declarator()?;
@@ -1325,7 +1251,7 @@ impl Parser {
         Ok(AstNode::Declaration {
             type_spec: type_specifier,
             declarator: Box::new(final_declarator),
-            initializer: None, // Parameters can't have initializers
+            initializer: None,
         })
     }
 
@@ -1357,7 +1283,6 @@ impl Parser {
                     self.advance(); // Consume '='
                     let expr = self.parse_constant_expression()?;
 
-                    // Extract the value from the constant expression
                     match expr {
                         AstNode::IntConstant(val) => {
                             next_implicit_value = val + 1;
@@ -1368,7 +1293,6 @@ impl Parser {
                         ))
                     }
                 } else {
-                    // Implicit value
                     let val = next_implicit_value;
                     next_implicit_value += 1;
                     val
@@ -1376,7 +1300,6 @@ impl Parser {
 
                 values.push((enum_name, value));
 
-                // Handle comma or end of enum
                 match self.peek() {
                     Some(Token::Comma) => {
                         self.advance();
@@ -1396,12 +1319,11 @@ impl Parser {
                 ));
             }
         }
-
         Ok(values)
     }
 
     fn parse_enum_declaration(&mut self) -> ParseResult {
-        self.advance(); // Consume 'enum' keyword
+        self.advance();
 
         let enum_name = if let Some(Token::Identifier(name)) = self.peek() {
             let name_val = name.clone();
@@ -1412,7 +1334,7 @@ impl Parser {
         };
 
         if let Some(Token::LBrace) = self.peek() {
-            self.advance(); // Consume '{'
+            self.advance();
             let values = self.parse_enum_values()?;
 
             self.expect_token(Token::RBrace)?;
@@ -1423,14 +1345,12 @@ impl Parser {
                 values,
             })
         } else if let Some(Token::Semicolon) = self.peek() {
-            // Forward declaration of an enum type (without values)
-            self.advance(); // Consume semicolon
+            self.advance();
             Ok(AstNode::EnumDefinition {
                 name: enum_name,
                 values: Vec::new(),
             })
         } else {
-            // If we have a name but no brace, it's a reference to an existing enum type in a declaration
             Ok(AstNode::TypeSpecifier(TypeSpecifier::Enum(enum_name)))
         }
     }
@@ -1444,4 +1364,3 @@ impl Parser {
         }
     }
 }
-
