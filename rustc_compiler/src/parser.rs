@@ -5,12 +5,14 @@ use crate::lexer::Token;
 use crate::ast::{AstNode, TypeSpecifier, Context};
 use std::iter::Peekable;
 use std::vec::IntoIter;
+use std::collections::HashMap;
 use crate::error::CompileError;
 
 /// The parser struct holds the list of tokens and provides methods to parse them.
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
+    type_defs: HashMap<String, (TypeSpecifier, usize)>, // Track typedef names
 }
 
 type ParseResult = Result<AstNode, CompileError>;
@@ -21,6 +23,7 @@ impl Parser {
         Parser {
             tokens,
             current: 0,
+            type_defs: HashMap::new(),
         }
     }
 
@@ -63,6 +66,11 @@ impl Parser {
     /// Parse an external declaration (function or global variable)
     fn parse_external_declaration(&mut self) -> ParseResult {
         let start_pos = self.current;
+
+        // Check for typedef declaration
+        if let Some(Token::TypedefKw) = self.peek() {
+            return self.parse_typedef_declaration();
+        }
 
         if let Some(Token::EnumKw) = self.peek() {
             return self.parse_enum_declaration();
@@ -137,6 +145,51 @@ impl Parser {
                 initializer,
             })
         }
+    }
+
+    /// Parse a typedef declaration
+    fn parse_typedef_declaration(&mut self) -> ParseResult {
+        self.advance(); // Consume 'typedef'
+
+        // Parse the base type
+        let (mut type_spec, mut pointer_level) = self.parse_type_specifier()?;
+
+        while let TypeSpecifier::TypedefName(name) = &type_spec {
+            if let Some((base_type, additional_pointers)) = self.type_defs.get(name) {
+                type_spec = base_type.clone();
+                pointer_level += additional_pointers;
+            } else {
+                return Err(CompileError::ParserError(format!("Undefined typedef '{}'", name)));
+            }
+        }
+        // Parse the alias identifier
+        let alias = self.parse_identifier()?;
+
+        // Build the declarator
+        let mut declarator = AstNode::Identifier(alias.clone());
+        for _ in 0..pointer_level {
+            declarator = AstNode::PointerDeclarator {
+                pointee: Box::new(declarator),
+            };
+        }
+
+        // Check for array dimensions
+        while let Some(Token::LBracket) = self.peek() {
+            self.advance();
+            let size = self.parse_expression()?;
+            self.expect_token(Token::RBracket)?;
+            declarator = AstNode::ArrayDeclarator {
+                base: Box::new(declarator),
+                size: Box::new(size),
+            };
+        }
+
+        self.expect_token(Token::Semicolon)?;
+        self.type_defs.insert(alias.clone(), (type_spec.clone(), pointer_level));
+        Ok(AstNode::TypedefDeclaration {
+            type_spec,
+            declarator: Box::new(declarator),
+        })
     }
 
     /// Parse declaration specifiers
@@ -334,42 +387,21 @@ impl Parser {
     /// Parse a statement
     pub fn parse_statement(&mut self) -> Result<AstNode, CompileError> {
         match self.peek() {
-            Some(Token::Semicolon) => {
-                self.advance();
-                Ok(AstNode::Empty)
-            },
-            Some(Token::LBrace) => {
-                self.parse_compound_statement()
-            },
-            Some(Token::IfKw) => {
-                self.parse_if_statement()
-            },
-            Some(Token::WhileKw) => {
-                self.parse_while_statement()
-            },
-            Some(Token::ForKw) => {
-                self.parse_for_statement()
-            },
-            Some(Token::ReturnKw) => {
-                self.parse_return_statement()
-            },
-            Some(Token::BreakKw) => {
-                self.advance();
-                self.expect_token(Token::Semicolon)?;
-                Ok(AstNode::BreakStatement)
-            },
-            Some(Token::ContinueKw) => {
-                self.advance();
-                self.expect_token(Token::Semicolon)?;
-                Ok(AstNode::ContinueStatement)
-            },
-            Some(Token::SwitchKw) => {
-                self.parse_switch_statement()
-            },
-            // Type specifiers - this could be a declaration
-            Some(Token::IntKw) | Some(Token::FloatKw) | Some(Token::CharKw) |
-            Some(Token::DoubleKw) | Some(Token::VoidKw) | Some(Token::UnsignedKw) => {
-                self.parse_declaration()
+            // Handle enum definition within function
+            Some(Token::EnumKw) => {
+                // Parse an enum declaration as a statement (inside a function)
+                let start_pos = self.current;
+                let result = self.parse_enum_declaration();
+
+                match result {
+                    Ok(AstNode::TypeSpecifier(_)) => {
+                        // If it's just a type reference without a definition,
+                        // reset and try parsing as a variable declaration
+                        self.current = start_pos;
+                        self.parse_declaration()
+                    },
+                    _ => result
+                }
             },
             // Handle struct declaration within function
             Some(Token::StructKw) => {
@@ -409,21 +441,44 @@ impl Parser {
                     Err(CompileError::ParserError("Expected struct name".to_string()))
                 }
             },
-            // Handle enum definition within function
-            Some(Token::EnumKw) => {
-                // Parse an enum declaration as a statement (inside a function)
-                let start_pos = self.current;
-                let result = self.parse_enum_declaration();
 
-                match result {
-                    Ok(AstNode::TypeSpecifier(_)) => {
-                        // If it's just a type reference without a definition,
-                        // reset and try parsing as a variable declaration
-                        self.current = start_pos;
-                        self.parse_declaration()
-                    },
-                    _ => result
-                }
+            Some(token) if self.is_type_specifier(token) => {
+                self.parse_declaration()
+            },
+            Some(Token::Semicolon) => {
+                self.advance();
+                Ok(AstNode::Empty)
+            },
+            Some(Token::LBrace) => {
+                self.parse_compound_statement()
+            },
+            Some(Token::IfKw) => {
+                self.parse_if_statement()
+            },
+            Some(Token::WhileKw) => {
+                self.parse_while_statement()
+            },
+            Some(Token::ForKw) => {
+                self.parse_for_statement()
+            },
+            Some(Token::ReturnKw) => {
+                self.parse_return_statement()
+            },
+            Some(Token::BreakKw) => {
+                self.advance();
+                self.expect_token(Token::Semicolon)?;
+                Ok(AstNode::BreakStatement)
+            },
+            Some(Token::ContinueKw) => {
+                self.advance();
+                self.expect_token(Token::Semicolon)?;
+                Ok(AstNode::ContinueStatement)
+            },
+            Some(Token::SwitchKw) => {
+                self.parse_switch_statement()
+            },
+            Some(Token::TypedefKw) => {
+                self.parse_typedef_declaration()
             },
             _ => {
                 // If it fails just send it back
@@ -1233,6 +1288,16 @@ impl Parser {
                     return Err(CompileError::ParserError("Expected identifier after 'enum'".to_string()));
                 }
             },
+            // Check for typedef name else return parser error
+            Token::Identifier(name) => {
+                if self.type_defs.contains_key(name) {
+                    let type_name = name.clone();
+                    self.advance();
+                    TypeSpecifier::TypedefName(type_name)
+                } else {
+                    return Err(CompileError::ParserError(format!("Expected type specifier, found identifier '{}'", name)));
+                }
+            },
             _ => return Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token))),
         };
 
@@ -1369,4 +1434,14 @@ impl Parser {
             Ok(AstNode::TypeSpecifier(TypeSpecifier::Enum(enum_name)))
         }
     }
+
+    fn is_type_specifier(&self, token: &Token) -> bool {
+        match token {
+            Token::IntKw | Token::FloatKw | Token::CharKw | Token::DoubleKw |
+            Token::VoidKw | Token::UnsignedKw | Token::StructKw | Token::EnumKw => true,
+            Token::Identifier(name) => self.type_defs.contains_key(name),
+            _ => false,
+        }
+    }
 }
+

@@ -76,7 +76,6 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                         // Add special handling for pointer assignment
                         if lhs_type.ends_with('*') && rhs_type.ends_with('*') {
                             // Pointer to pointer assignment is allowed
-                            // (as long as they're compatible, which we'll simplify here)
                             context.emit(&format!("    sw {}, {}(s0)", rhs_reg, offset));
                             return Ok(rhs_reg);
                         }
@@ -1841,7 +1840,12 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
         AstNode::BinaryOperation { op, left, right, .. } => {
             get_binary_operation_type(op, left, right, context)
         },
-        AstNode::UnaryOperation { operand, .. } => {
+        AstNode::UnaryOperation { op, operand} => {
+            if op == "&" {
+                let mut operand_type = get_expression_type(operand, context)?;
+                operand_type = {operand_type} + "*";
+                return Ok(operand_type.to_string());
+            }
             let operand_type = get_expression_type(operand, context)?;
             if operand_type == "float" {
                 Ok("float".to_string())

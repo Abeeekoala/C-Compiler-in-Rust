@@ -1,4 +1,6 @@
 use crate::ast::AstNode;
+use crate::codegen::context::FullType;
+use crate::ast::TypeSpecifier;
 use crate::codegen::context::{CodeGenContext, StorageLocation, Symbol};
 use crate::codegen::statement::generate_statement;
 use crate::codegen::expression::generate_expression;
@@ -15,7 +17,10 @@ pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result
                 // Store function declaration before generating code
                 let param_types = parameters.iter()
                     .map(|p| match &**p {
-                        AstNode::Declaration { type_spec, .. } => type_spec_to_string(type_spec),
+                        AstNode::Declaration { type_spec, declarator, .. } => {
+                            println!("type_spec: {:?}", type_spec);
+                            get_full_type(context, type_spec, declarator).to_string()
+                        }
                         _ => "unknown".to_string(),
                     })
                     .collect();
@@ -49,12 +54,7 @@ pub fn generate_function(node: &AstNode, context: &mut CodeGenContext) -> Result
                         };
 
                         // Get parameter type as string
-                        let mut type_str = type_spec_to_string(type_spec);
-
-                        // Add pointer notation to type
-                        if is_pointer {
-                            type_str = format!("{}*", type_str);
-                        }
+                        let type_str = get_full_type(context, type_spec, declarator).to_string();
 
                         // Determine if parameter is floating-point
                         let is_float = type_str == "float" || type_str == "double";
@@ -160,6 +160,29 @@ fn extract_return_type_from_decl_specifiers(decl_specifiers: &[Box<AstNode>]) ->
 
     // If we couldn't find a type specifier, default to "int" (C default)
     Ok("int".to_string())
+}
+
+fn get_full_type(context: &CodeGenContext, type_spec: &TypeSpecifier, declarator: &AstNode) -> FullType {
+    // First check if this is a typedef name that needs to be resolved
+    let base_type = match type_spec {
+        TypeSpecifier::TypedefName(name) => {
+            // Look up the actual type in the typedef map
+            if let Some(actual_type) = context.typedef_map.get(name) {
+                actual_type.clone()
+            } else {
+                FullType::Base(type_spec.clone())
+            }
+        },
+        _ => FullType::Base(type_spec.clone()),
+    };
+
+    // Handle pointer declarators
+    match declarator {
+        AstNode::PointerDeclarator { pointee } => {
+            FullType::Pointer(Box::new(get_full_type(context, type_spec, pointee)))
+        }
+        _ => base_type,
+    }
 }
 
 /// Convert TypeSpecifier to string

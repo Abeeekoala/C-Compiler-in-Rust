@@ -7,10 +7,17 @@ use crate::ast::SwitchCase;
 use crate::codegen::context::StorageLocation;
 use crate::codegen::expression::get_expression_type;
 use crate::codegen::expression;
+use crate::codegen::context::FullType;
 
 /// Generate code for a statement
 pub fn generate_statement(node: &AstNode, context: &mut CodeGenContext) -> Result<(), CompileError> {
     match node {
+        AstNode::TypedefDeclaration { type_spec, declarator } => {
+            let full_type = build_full_type(type_spec, declarator, context)?;
+            let base_name = extract_base_identifier(declarator)?;
+            context.typedef_map.insert(base_name, full_type);
+            Ok(()) // No code generated for typedef
+        },
         AstNode::ReturnStatement(_) => generate_return_statement(node, context),
         AstNode::WhileStatement { .. } => generate_while_statement(node, context),
         AstNode::IfStatement { .. } => generate_if_statement(node, context),
@@ -326,32 +333,19 @@ fn generate_declaration_item(node: &AstNode, context: &mut CodeGenContext) -> Re
     match node {
         AstNode::Declaration { type_spec, declarator, initializer } => {
             // Convert TypeSpecifier to base type string
-            let base_type_str = match type_spec {
-                TypeSpecifier::Int => "int",
-                TypeSpecifier::Unsigned => "unsigned",
-                TypeSpecifier::Char => "char",
-                TypeSpecifier::Float => "float",
-                TypeSpecifier::Double => "double",
-                TypeSpecifier::Void => "void",
-                TypeSpecifier::Struct(struct_name) => {
-                    // Handle struct type
-                    if let AstNode::Identifier(name) = &**declarator {
-                        context.add_struct_variable(name.clone(), struct_name.clone());
-                        if initializer.is_some() {
-                            return Err(CompileError::CodegenError("Struct initializers not yet supported".to_string()));
-                        }
-                        return Ok(());
-                    } else {
-                        return Err(CompileError::CodegenError("Expected identifier for struct variable".to_string()));
-                    }
-                },
-                _ => return Err(CompileError::CodegenError("Unsupported type specifier".to_string())),
+            let full_type = match type_spec {
+                TypeSpecifier::TypedefName(name) => {
+                    context.typedef_map.get(name).cloned().ok_or_else(|| {
+                        CompileError::CodegenError(format!("Unknown typedef: {}", name))
+                    })?
+                }
+                _ => FullType::Base(type_spec.clone()),
             }.to_string();
 
             // Handle array declarations
             if let AstNode::ArrayDeclarator { .. } = &**declarator {
                 let (name, dimensions) = extract_array_declarator(declarator)?;
-                let offset = context.add_array(name.to_string(), base_type_str, dimensions.clone());
+                let offset = context.add_array(name.to_string(), full_type, dimensions.clone());
 
                 if let Some(init) = initializer {
                     match &**init {
@@ -368,7 +362,7 @@ fn generate_declaration_item(node: &AstNode, context: &mut CodeGenContext) -> Re
 
             // Handle simple variables and pointers
             let name = extract_base_identifier(&**declarator)?;
-            let type_str = compute_type_string(&**declarator, &base_type_str);
+            let type_str = compute_type_string(&**declarator, &full_type);
 
             // Determine size based on type
             let size = if type_str.ends_with("*") {
@@ -853,5 +847,27 @@ fn compute_type_string(declarator: &AstNode, base_type: &str) -> String {
             }
         },
         _ => panic!("Unsupported declarator"),
+    }
+}
+
+fn build_full_type(
+    type_spec: &TypeSpecifier,
+    declarator: &AstNode,
+    context: &mut CodeGenContext,
+) -> Result<FullType, CompileError> {
+    println!("Building full type for: {:?}", declarator);
+    match declarator {
+        AstNode::Identifier(_) => {
+            // Simple identifier: use the base type_spec
+            Ok(FullType::Base(type_spec.clone()))
+        }
+        AstNode::PointerDeclarator { pointee } => {
+            // Pointer: build the pointee's type and wrap it
+            let pointee_type = build_full_type(type_spec, pointee, context)?;
+            Ok(FullType::Pointer(Box::new(pointee_type)))
+        }
+        _ => Err(CompileError::CodegenError(
+            format!("Unsupported declarator in typedef: {:?}", declarator),
+        )),
     }
 }

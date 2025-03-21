@@ -174,6 +174,11 @@ pub enum AstNode {
         name: String,
         values: Vec<(String, i32)>,
     },
+    /// Typedef declaration
+    TypedefDeclaration {
+        type_spec: TypeSpecifier,
+        declarator: Box<AstNode>,
+    },
 }
 
 /// Binary operators
@@ -210,6 +215,7 @@ pub enum TypeSpecifier {
     Double,
     Struct(String),
     Enum(String),
+    TypedefName(String),
 }
 
 // Implement Display for TypeSpecifier
@@ -224,6 +230,7 @@ impl fmt::Display for TypeSpecifier {
             TypeSpecifier::Double => write!(f, "double"),
             TypeSpecifier::Struct(name) => write!(f, "struct {}", name),
             TypeSpecifier::Enum(name) => write!(f, "enum {}", name),
+            TypeSpecifier::TypedefName(name) => write!(f, "{}", name),
         }
     }
 }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-
+use std::fmt;
+use crate::ast::TypeSpecifier;
 /// Types of locations where variables can be stored
 #[derive(Debug, Clone)]
 pub enum StorageLocation {
@@ -40,6 +41,31 @@ pub struct FieldInfo {
     pub type_info: String,
     pub size: usize,
 }
+/// Full type
+#[derive(Debug, Clone)]
+pub enum FullType {
+    Base(TypeSpecifier),
+    Pointer(Box<FullType>),
+    // Add more variants (e.g., Array) as needed
+}
+impl fmt::Display for FullType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FullType::Base(type_spec) => match type_spec {
+                TypeSpecifier::Int => write!(f, "int"),
+                TypeSpecifier::Unsigned => write!(f, "unsigned"),
+                TypeSpecifier::Char => write!(f, "char"),
+                TypeSpecifier::Float => write!(f, "float"),
+                TypeSpecifier::Double => write!(f, "double"),
+                TypeSpecifier::Void => write!(f, "void"),
+                TypeSpecifier::Struct(struct_name) => write!(f, "struct {}", struct_name),
+                TypeSpecifier::TypedefName(name) => write!(f, "{}", name), // Will be resolved later
+                _ => write!(f, "{:?}", type_spec), // Fallback for unhandled types
+            },
+            FullType::Pointer(pointee) => write!(f, "{}*", pointee),
+        }
+    }
+}
 
 /// Manages the compilation context
 #[derive(Debug)]
@@ -72,6 +98,7 @@ pub struct CodeGenContext {
     pub function_signatures: HashMap<String, String>,
 
     pub struct_definitions: HashMap<String, StructDefinition>,
+    pub typedef_map: HashMap<String, FullType>,
 }
 
 impl CodeGenContext {
@@ -103,6 +130,7 @@ impl CodeGenContext {
             continue_labels: Vec::new(),
             function_signatures: HashMap::new(),
             struct_definitions: HashMap::new(),
+            typedef_map: HashMap::new(),
         }
     }
 
