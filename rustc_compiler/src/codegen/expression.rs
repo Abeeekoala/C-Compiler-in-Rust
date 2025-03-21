@@ -250,8 +250,12 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
                 },
                 AstNode::ArraySubscript { .. } => {
                     let (base, indices) = collect_array_access(lhs)?;
-                    let addr_reg = calculate_array_element_address(&base, &indices, context)?;
-                    context.emit(&format!("    sw {}, 0({})", rhs_reg, addr_reg));
+                    let (addr_reg, element_size) = calculate_array_element_address(&base, &indices, context)?;
+                    if element_size == 1 {
+                        context.emit(&format!("    sb {}, 0({})", rhs_reg, addr_reg));
+                    } else {
+                        context.emit(&format!("    sw {}, 0({})", rhs_reg, addr_reg));
+                    }
                     context.free_register(&addr_reg);
                     return Ok(rhs_reg);
                 },
@@ -340,9 +344,22 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
         // Array subscript: array[index]
         AstNode::ArraySubscript { array, index } => {
             let (base, indices) = collect_array_access(node)?;
-            let addr_reg = calculate_array_element_address(&base, &indices, context)?;
+            let (addr_reg, element_size) = calculate_array_element_address(&base, &indices, context)?;
             let result_reg = context.get_register();
-            context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
+
+            if element_size == 1 {
+                // For char type, use lb (load byte)
+                context.emit(&format!("    lb {}, 0({})", result_reg, addr_reg));
+
+                // Sign-extend the byte
+                context.emit(&format!("    # Sign-extend char to word"));
+                context.emit(&format!("    slli {0}, {0}, 24", result_reg));
+                context.emit(&format!("    srai {0}, {0}, 24", result_reg));
+            } else {
+                // For other types, use the regular lw
+                context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
+            }
+
             context.free_register(&addr_reg);
             Ok(result_reg)
         },
@@ -374,6 +391,19 @@ pub fn generate_expression(node: &AstNode, context: &mut CodeGenContext) -> Resu
             context.emit(&format!("    # sizeof expression with type {}", expr_type));
             context.emit(&format!("    li {}, {}", result_reg, size));
             Ok(result_reg)
+        },
+        AstNode::StringLiteral(value) => {
+            // Generate a unique label for the string
+            let str_label = context.generate_label("str");
+
+            // Emit the string into the .data section
+            context.emit_data(&format!("{}:", str_label));
+            context.emit_data(&format!("    .string \"{}\"", value));
+
+            // Load the address into a register
+            let reg = context.get_register();
+            context.emit(&format!("    la {}, {}", reg, str_label));
+            Ok(reg)
         },
         // Handle other expression types
         _ => Err(CompileError::CodegenError(format!("Unsupported expression type: {:?}", node))),
@@ -583,12 +613,12 @@ fn generate_pointer_arithmetic(
     };
 
     // Get element size based on the pointer type
-    let element_size = match ptr_type.as_str() {
-        "char" => 1,
-        "short" => 2,
-        "int" | "float" => 4,
-        "double" => 8,
-        _ => 4, // Default to 4 bytes for unknown types
+    let element_size = if ptr_type.contains("char") {
+        1 // Char is 1 byte
+    } else if ptr_type.contains("double") {
+        8 // Double is 8 bytes
+    } else {
+        4 // Default is 4 bytes (int, float, pointers)
     };
 
     let result_reg = if op == "+" || (op == "-" && is_left_ptr) {
@@ -892,13 +922,46 @@ fn generate_unary_operation(
         // Pointer dereference
         "*" => {
             let addr_reg = generate_expression(operand, context)?;
-            let result_reg = context.get_register();
-            context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
-            if addr_reg != result_reg {
+
+            // Get the type of the pointer operand to determine how to load
+            let operand_type = get_expression_type(operand, context)?;
+
+            // Check if we're dereferencing a char pointer
+            if operand_type == "char*" {
+                // For char pointers, use lb (load byte)
+                let result_reg = context.get_register();
+                context.emit(&format!("    lb {}, 0({})", result_reg, addr_reg));
+
+                // Sign-extend the byte to a word
+                context.emit(&format!("    # Sign-extend char to word"));
+                context.emit(&format!("    slli {0}, {0}, 24", result_reg));
+                context.emit(&format!("    srai {0}, {0}, 24", result_reg));
+
+                if addr_reg != result_reg {
+                    context.free_register(&addr_reg);
+                }
+                Ok(result_reg)
+            } else if operand_type == "float*" {
+                // For float pointers, use flw (float load word)
+                let result_reg = context.get_fp_register();
+                context.emit(&format!("    flw {}, 0({})", result_reg, addr_reg));
                 context.free_register(&addr_reg);
+                Ok(result_reg)
+            } else if operand_type == "double*" {
+                // For double pointers, use fld (float load double)
+                let result_reg = context.get_fp_register();
+                context.emit(&format!("    fld {}, 0({})", result_reg, addr_reg));
+                context.free_register(&addr_reg);
+                Ok(result_reg)
+            } else {
+                // For all other pointers (int*, etc.), use lw (load word)
+                let result_reg = context.get_register();
+                context.emit(&format!("    lw {}, 0({})", result_reg, addr_reg));
+                if addr_reg != result_reg {
+                    context.free_register(&addr_reg);
+                }
+                Ok(result_reg)
             }
-            Ok(result_reg)
-            // Note: Currently assumes integer pointers. For float/double, use flw/fld with type info.
         },
 
         // Address-of operator
@@ -1059,7 +1122,7 @@ fn generate_assignment(left: &AstNode, right: &AstNode, context: &mut CodeGenCon
                 if let Some(symbol) = context.lookup_symbol(&var_name) {
                     let _type_info = symbol.type_info.clone();
 
-                    if !_type_info.starts_with("struct ") {
+                    if !_type_info.starts_with("struct "){
                         return Err(CompileError::CodegenError(
                             format!("Variable {} is not a struct", var_name)
                         ));
@@ -1108,7 +1171,7 @@ fn generate_function_call(
     // Get function name
     let func_name = match function {
         AstNode::Identifier(name) => name,
-        _ => return Err(CompileError::CodegenError("Expected function name".to_string())),
+        _ => return Err(CompileError::CodegenError(format!("Expected function name, found {:?}", function))),
     };
 
     // Save all used registers to stack before the call
@@ -1150,23 +1213,31 @@ fn generate_function_call(
                 }
             }
         } else {
-            // Regular integer arguments go in a0-a7
-            if let AstNode::IntConstant(value) = &**arg {
-                // Load immediate directly into argument register
-                context.emit(&format!("    li a{}, {}", i, value));
-            } else {
-                // For complex expressions, evaluate and move to argument register
-                let arg_reg = generate_expression(arg, context)?;
+            match &**arg {
+                AstNode::IntConstant(value) => {
+                    context.emit(&format!("    li a{}, {}", i, value));
+                },
+                AstNode::StringLiteral(value) => {
+                    // Generate a unique label for the string
+                    let str_label = context.generate_label("str");
+                    context.emit_data(&format!("{}:", str_label));
+                    context.emit_data(&format!("    .string \"{}\"", value));
 
-                if arg_reg.starts_with('f') {
-                    // Floating-point register, need to convert to integer
-                    context.emit(&format!("    fcvt.w.s a{}, {}", i, arg_reg));
-                    println!("Debug fcvt.w.s a{}, {} for function call {}", i, arg_reg, func_name);
-                    context.free_fp_register(&arg_reg);
-                } else if arg_reg != format!("a{}", i) {
-                    context.emit(&format!("    mv a{}, {}", i, arg_reg));
-                    context.free_register(&arg_reg);
-                }
+                    // Load the address into the argument register
+                    context.emit(&format!("    la a{}, {}", i, str_label));
+                },
+                _ => {
+                    // For complex expressions (including variables or other expressions)
+                    let arg_reg = generate_expression(arg, context)?;
+                    if arg_reg.starts_with('f') {
+                        // Floating-point register, convert to integer
+                        context.emit(&format!("    fcvt.w.s a{}, {}", i, arg_reg));
+                        context.free_fp_register(&arg_reg);
+                    } else if arg_reg != format!("a{}", i) {
+                        context.emit(&format!("    mv a{}, {}", i, arg_reg));
+                        context.free_register(&arg_reg);
+                    }
+                },
             }
         }
     }
@@ -1208,10 +1279,10 @@ fn generate_function_call(
 }
 
 fn calculate_array_element_address(
-    array_name: &str,
-    indices: &[AstNode],
-    context: &mut CodeGenContext,
-) -> Result<String, CompileError> {
+        array_name: &str,
+        indices: &[AstNode],
+        context: &mut CodeGenContext,
+    ) -> Result<(String, usize), CompileError> {
     // data from the symbol (immutable borrow)
     let (base_offset, dimensions, is_global, global_label, is_pointer, type_info) = {
         if let Some(symbol) = context.lookup_symbol(array_name) {
@@ -1234,6 +1305,15 @@ fn calculate_array_element_address(
         }
     };
 
+    // Calculate element size based on the pointer type
+    let element_size = if type_info.contains("char") {
+        1 // Char is 1 byte
+    } else if type_info.contains("double") {
+        8 // Double is 8 bytes
+    } else {
+        4 // Default is 4 bytes (int, float, pointers)
+    };
+
     println!("Array/pointer access: name={}, is_pointer={}, type={}",
              array_name, is_pointer, type_info);
 
@@ -1247,35 +1327,29 @@ fn calculate_array_element_address(
 
         // Generate code for the index expression
         let index_reg = generate_expression(&indices[0], context)?;
-
-        // Calculate element size based on the pointer type
-        let element_size = if type_info.contains("double") { 8 } else { 4 };
-
+        let base_reg = context.get_register();
+        context.emit(&format!("    lw {}, {}(s0)", base_reg, base_offset));
         // Compute address: pointer_value + index * element_size
         let addr_reg = context.get_register();
 
         // Scale the index by element size
-        context.emit(&format!("    slli {0}, {1}, {2}",
-                             addr_reg, index_reg,
-                             if element_size == 8 { 3 } else { 2 })); // *4 or *8
-
-        // Load the pointer value
-        let ptr_reg = context.get_register();
-        if is_global {
-            context.emit(&format!("    la {}, {}", ptr_reg, global_label));
-            context.emit(&format!("    lw {}, 0({})", ptr_reg, ptr_reg)); // Load pointer value
+        if element_size == 1 {
+            // For char arrays, no shifting needed (just add index directly)
+            context.emit(&format!("    add {0}, {1}, {2}", addr_reg, base_reg, index_reg));
         } else {
-            context.emit(&format!("    lw {}, {}(s0)", ptr_reg, base_offset)); // Load pointer value from stack
-        }
+            // For other types, scale by element size
+            context.emit(&format!("    slli {0}, {1}, {2}",
+                                 addr_reg, index_reg,
+                                 if element_size == 8 { 3 } else { 2 })); // *4 or *8
 
-        // Add the scaled index to the pointer value
-        context.emit(&format!("    add {}, {}, {}", addr_reg, ptr_reg, addr_reg));
+            // Add the scaled index to the base address
+            context.emit(&format!("    add {0}, {0}, {1}", addr_reg, base_reg));
+        }
 
         // Free temporary registers
         context.free_register(&index_reg);
-        context.free_register(&ptr_reg);
-
-        return Ok(addr_reg);
+        context.free_register(&base_reg);
+        return Ok((addr_reg, element_size));
     }
 
     // Regular array processing (existing code)
@@ -1335,7 +1409,7 @@ fn calculate_array_element_address(
     }
     context.free_register(&offset_reg);
 
-    Ok(addr_reg)
+    Ok((addr_reg, element_size))
 }
 
 fn collect_array_access(node: &AstNode) -> Result<(String, Vec<AstNode>), CompileError> {
@@ -1698,6 +1772,8 @@ pub fn get_expression_type(node: &AstNode, context: &mut CodeGenContext) -> Resu
     let result = match node {
         AstNode::IntConstant(_) => Ok("int".to_string()),
         AstNode::FloatConstant(_) => Ok("float".to_string()),
+
+        AstNode::StringLiteral(_) => Ok("char*".to_string()),
         AstNode::Identifier(name) => {
             if let Some(symbol) = context.lookup_symbol(name) {
                 Ok(symbol.type_info.clone())

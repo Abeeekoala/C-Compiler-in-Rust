@@ -64,12 +64,10 @@ impl Parser {
     fn parse_external_declaration(&mut self) -> ParseResult {
         let start_pos = self.current;
 
-        // Handle enum definition at global scope
         if let Some(Token::EnumKw) = self.peek() {
             return self.parse_enum_declaration();
         }
 
-        // Struct parsing
         if let Some(Token::StructKw) = self.peek() {
             self.advance();
             let struct_name = self.parse_identifier()?;
@@ -78,52 +76,51 @@ impl Parser {
                 let fields = self.parse_struct_fields()?;
                 self.expect_token(Token::RBrace)?;
                 self.expect_token(Token::Semicolon)?;
-
-                return Ok(AstNode::StructDefinition {
-                    name: struct_name,
-                    fields,
-                });
+                return Ok(AstNode::StructDefinition { name: struct_name, fields });
             } else {
                 self.current = start_pos;
             }
         }
 
-        // Parse as function or variable
-        let type_spec = self.parse_declaration_specifiers()?;
+        let (type_spec, pointer_level) = self.parse_type_specifier()?;
         let identifier = self.parse_identifier()?;
+        let declarator = AstNode::Identifier(identifier);
 
+        // For function declarations
         if let Some(Token::LParen) = self.peek() {
             self.advance();
-
             let parameters = self.parse_parameter_list()?;
             self.expect_token(Token::RParen)?;
 
             if let Some(Token::LBrace) = self.peek() {
                 let body = self.parse_compound_statement()?;
-
+                let mut final_declarator = declarator;
                 return Ok(AstNode::FunctionDefinition {
                     decl_specifiers: vec![Box::new(AstNode::TypeSpecifier(type_spec))],
-                    declarator: Box::new(AstNode::Identifier(identifier)),
+                    declarator: Box::new(final_declarator),
                     parameters,
                     compound_statement: Box::new(body),
                 });
             } else {
                 self.expect_token(Token::Semicolon)?;
-
                 return Ok(AstNode::FunctionDeclaration {
                     decl_specifiers: vec![Box::new(AstNode::TypeSpecifier(type_spec))],
-                    declarator: Box::new(AstNode::Identifier(identifier)),
+                    declarator: Box::new(declarator),
                     parameters,
                 });
             }
         } else {
-            let mut declarator = AstNode::Identifier(identifier);
+            // For variable declarations
+            let mut final_declarator = declarator;
+            for _ in 0..pointer_level {
+                final_declarator = AstNode::PointerDeclarator { pointee: Box::new(final_declarator) };
+            }
             while let Some(Token::LBracket) = self.peek() {
                 self.advance();
                 let size = self.parse_expression()?;
                 self.expect_token(Token::RBracket)?;
-                declarator = AstNode::ArrayDeclarator {
-                    base: Box::new(declarator),
+                final_declarator = AstNode::ArrayDeclarator {
+                    base: Box::new(final_declarator),
                     size: Box::new(size),
                 };
             }
@@ -135,31 +132,11 @@ impl Parser {
             };
             self.expect_token(Token::Semicolon)?;
             Ok(AstNode::Declaration {
-                type_spec,
-                declarator: Box::new(declarator),
+                type_spec: type_spec,
+                declarator: Box::new(final_declarator),
                 initializer,
             })
         }
-    }
-
-    /// Parse a function definition
-    pub fn parse_function_definition(&mut self) -> ParseResult {
-        let type_spec = self.parse_declaration_specifiers()?;
-        let mut decl_spec = Vec::new();
-        decl_spec.push(Box::new(AstNode::TypeSpecifier(type_spec)));
-        let function_name = self.parse_identifier()?;
-        let declarator = Box::new(AstNode::Identifier(function_name));
-        self.expect_token(Token::LParen)?;
-        let parameters = self.parse_parameter_list()?;
-        self.expect_token(Token::RParen)?;
-        let body = self.parse_compound_statement()?;
-
-        Ok(AstNode::FunctionDefinition {
-            decl_specifiers: decl_spec,
-            declarator,
-            parameters,
-            compound_statement: Box::new(body),
-        })
     }
 
     /// Parse declaration specifiers
@@ -222,7 +199,7 @@ impl Parser {
                 break;
             }
 
-            let field_type = self.parse_type_specifier()?;
+            let (field_type, _) = self.parse_type_specifier()?;
             let field_name = self.parse_identifier()?;
             let field_node = AstNode::StructField {
                 type_spec: field_type,
@@ -302,7 +279,7 @@ impl Parser {
     }
 
     pub fn parse_declaration(&mut self) -> ParseResult {
-        let type_specifier = self.parse_type_specifier()?;
+        let (type_specifier, pointer_level) = self.parse_type_specifier()?;
         let mut declarator = self.parse_declarator()?;
 
         while let Some(Token::LBracket) = self.peek() {
@@ -320,16 +297,26 @@ impl Parser {
                 self.expect_token(Token::Assign)?;
                 Some(Box::new(self.parse_initializer()?))
             },
-            _ => None
+            _ => None,
         };
 
         self.expect_token(Token::Semicolon)?;
+
+        // Wrap declarator in PointerDeclarator nodes based on pointer_level
+        let mut final_declarator = declarator;
+        for _ in 0..pointer_level {
+            final_declarator = AstNode::PointerDeclarator {
+                pointee: Box::new(final_declarator),
+            };
+        }
+
         Ok(AstNode::Declaration {
             type_spec: type_specifier,
-            declarator: Box::new(declarator),
+            declarator: Box::new(final_declarator),
             initializer,
         })
     }
+
 
     /// Parse a compound statement
     fn parse_compound_statement(&mut self) -> ParseResult {
@@ -984,21 +971,12 @@ impl Parser {
                     self.advance(); // Consume the '('
 
                     // Try to parse as a type name first
-                    if let Ok(type_spec) = self.parse_type_specifier() {
-                        let mut pointers = 0;
-
-                        // Handle pointer types
-                        while let Some(Token::Mul) = self.peek() {
-                            self.advance();
-                            pointers += 1;
-                        }
-
+                    if let Ok((type_spec, pointer_level)) = self.parse_type_specifier() {
                         self.expect_token(Token::RParen)?;
-
                         // Create a SizeofType node
                         return Ok(AstNode::SizeofType {
                             type_spec,
-                            pointer_level: pointers
+                            pointer_level
                         });
                     } else {
                         // If not a type, must be an expression
@@ -1184,39 +1162,38 @@ impl Parser {
     }
 
     /// Parses a type specifier like int, char, void...
-    pub fn parse_type_specifier(&mut self) -> Result<TypeSpecifier, CompileError> {
+    pub fn parse_type_specifier(&mut self) -> Result<(TypeSpecifier, usize), CompileError> {
         let token = self.peek().ok_or_else(|| CompileError::ParserError("Unexpected end of file".to_string()))?;
 
-        match token {
+        // First, parse the base type
+        let base_type = match token {
             Token::IntKw => {
                 self.advance();
-                Ok(TypeSpecifier::Int)
+                TypeSpecifier::Int
             },
             Token::CharKw => {
                 self.advance();
-                Ok(TypeSpecifier::Char)
+                TypeSpecifier::Char
             },
             Token::VoidKw => {
                 self.advance();
-                Ok(TypeSpecifier::Void)
+                TypeSpecifier::Void
             },
-            Token::FloatKw =>{
+            Token::FloatKw => {
                 self.advance();
-                Ok(TypeSpecifier::Float)
+                TypeSpecifier::Float
             },
             Token::DoubleKw => {
                 self.advance();
-                Ok(TypeSpecifier::Double)
+                TypeSpecifier::Double
             },
             Token::UnsignedKw => {
                 self.advance();
                 // Check if next token is int(optional)
                 if let Some(Token::IntKw) = self.peek() {
                     self.advance();
-                    Ok(TypeSpecifier::Unsigned)
-                } else {
-                    Ok(TypeSpecifier::Unsigned)
                 }
+                TypeSpecifier::Unsigned
             },
             Token::StructKw => {
                 self.advance();
@@ -1227,10 +1204,10 @@ impl Parser {
                         self.advance();
                         let fields = self.parse_struct_fields()?;
                         self.expect_token(Token::RBrace)?;
-                        return Ok(TypeSpecifier::Struct(struct_name));
+                        TypeSpecifier::Struct(struct_name)
                     } else {
-                        // Just the type reference upon failure
-                        return Ok(TypeSpecifier::Struct(struct_name));
+                        // Just the type reference
+                        TypeSpecifier::Struct(struct_name)
                     }
                 } else {
                     return Err(CompileError::ParserError("Expected identifier after 'struct'".to_string()));
@@ -1243,50 +1220,47 @@ impl Parser {
                     self.advance();
 
                     if let Some(Token::LBrace) = self.peek() {
-                        // This is a full enum definition
-                        self.advance(); // Consume '{'
+                        // Full enum definition
+                        self.advance();
                         let values = self.parse_enum_values()?;
                         self.expect_token(Token::RBrace)?;
-
-                        // No need to consume semicolon here, that's done at declaration level
-
-                        return Ok(TypeSpecifier::Enum(enum_name));
+                        TypeSpecifier::Enum(enum_name)
                     } else {
-                        // This is just a reference to an enum type
-                        return Ok(TypeSpecifier::Enum(enum_name));
+                        // Reference to enum type
+                        TypeSpecifier::Enum(enum_name)
                     }
                 } else {
                     return Err(CompileError::ParserError("Expected identifier after 'enum'".to_string()));
                 }
             },
-            _ => Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token)))
+            _ => return Err(CompileError::ParserError(format!("Expected type specifier, found {:?}", token))),
+        };
+
+        // Now, count pointer levels (*) after the base type
+        let mut pointer_level = 0;
+        while let Some(Token::Mul) = self.peek() {
+            self.advance(); // Consume *
+            pointer_level += 1;
         }
+
+        Ok((base_type, pointer_level))
     }
 
     /// Parse a function parameter declarator
     fn parse_parameter_declaration(&mut self) -> Result<AstNode, CompileError> {
-        let type_specifier = self.parse_type_specifier()?;
-
-        // Check for pointer type
-        let mut is_pointer = false;
-        if let Some(Token::Mul) = self.peek() {
-            self.advance(); // Consume '*'
-            is_pointer = true;
-        }
-
-        let identifier = self.parse_identifier()?;
-        let mut declarator = Box::new(AstNode::Identifier(identifier));
-
-        if is_pointer {
-            declarator = Box::new(AstNode::PointerDeclarator {
-                pointee: declarator,
-            });
+        let (type_specifier, pointer_level) = self.parse_type_specifier()?;
+        let declarator = self.parse_declarator()?;
+        let mut final_declarator = declarator;
+        for _ in 0..pointer_level {
+            final_declarator = AstNode::PointerDeclarator {
+                pointee: Box::new(final_declarator),
+            };
         }
 
         Ok(AstNode::Declaration {
             type_spec: type_specifier,
-            declarator,
-            initializer: None,
+            declarator: Box::new(final_declarator),
+            initializer: None, // Parameters can't have initializers
         })
     }
 

@@ -385,6 +385,50 @@ fn generate_declaration_item(node: &AstNode, context: &mut CodeGenContext) -> Re
 
             // Handle initializer
             if let Some(init_expr) = initializer {
+                // Special case for char* with string literal
+                if type_str == "char*" || type_str.starts_with("char *") {
+                    if let AstNode::StringLiteral(string_value) = &**init_expr {
+                        // For string literals initializing char pointers
+                        if context.in_function {
+                            // For local variables, create a string in data section with unique label
+                            let string_label = context.generate_label("str");
+
+                            // Store string in data section with null terminator
+                            let escaped_string = string_value.replace("\\", "\\\\")
+                                                           .replace("\n", "\\n")
+                                                           .replace("\t", "\\t")
+                                                           .replace("\"", "\\\"");
+                            context.emit_data(&format!("{}:", string_label));
+                            context.emit_data(&format!("    .string \"{}\"", escaped_string));
+
+                            // Load address of string into a register
+                            let addr_reg = context.get_register();
+                            context.emit(&format!("    la {}, {}", addr_reg, string_label));
+
+                            // Store register into the pointer variable
+                            context.emit(&format!("    sw {}, {}(s0)", addr_reg, stack_offset));
+                            context.free_register(&addr_reg);
+                        } else {
+                            // For global variables, similar but simpler
+                            let string_label = context.generate_label("str");
+                            let escaped_string = string_value.replace("\\", "\\\\")
+                                                           .replace("\n", "\\n")
+                                                           .replace("\t", "\\t")
+                                                           .replace("\"", "\\\"");
+
+                            // Add string to data section
+                            context.emit_data(&format!("{}:", string_label));
+                            context.emit_data(&format!("    .string \"{}\"", escaped_string));
+
+                            // Initialize global pointer to string
+                            context.emit_data(&format!("{}:", name));
+                            context.emit_data(&format!("    .word {}", string_label));
+                        }
+                        return Ok(());
+                    }
+                }
+
+                // Regular initialization (existing code)
                 if context.in_function {
                     // Local variable/pointer initialization
                     let reg = expression::generate_expression(init_expr, context)?;
@@ -403,7 +447,7 @@ fn generate_declaration_item(node: &AstNode, context: &mut CodeGenContext) -> Re
                         context.free_register(&reg);
                         context.free_fp_register(&fp_reg);
                     } else {
-                        // Integers and pointers use sw
+                        // Integers, pointers, and unsigned types use sw
                         context.emit(&format!("    sw {}, {}(s0)", reg, stack_offset));
                         context.free_register(&reg);
                     }
